@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || true
+
+      - name: Basic lint (ruff fallback to flake8 if needed)
+        run: |
+          pip install ruff || pip install flake8
+          if command -v ruff >/dev/null; then
+            ruff check .
+          else
+            flake8 .
+          fi
+
+      - name: Check executable bits
+        run: |
+          for f in fw-manager.sh run.sh setup.sh setup_fmk.sh firmware_toolkit.sh; do
+            [ -x "$f" ] || { echo "Missing +x on $f"; exit 1; }
+          done

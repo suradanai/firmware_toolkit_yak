@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+ <defs>
+  <linearGradient id="g1" x1="0" x2="1" y1="0" y2="1">
+   <stop offset="0%" stop-color="#0d47a1"/>
+   <stop offset="100%" stop-color="#42a5f5"/>
+  </linearGradient>
+  <linearGradient id="g2" x1="0" x2="1" y1="1" y2="0">
+   <stop offset="0%" stop-color="#263238"/>
+   <stop offset="100%" stop-color="#546e7a"/>
+  </linearGradient>
+  <style>
+   .board{fill:url(#g1);stroke:#ffffff;stroke-width:4;stroke-linejoin:round}
+   .chip{fill:url(#g2);stroke:#ffffff;stroke-width:3;stroke-linejoin:round}
+   .leg{stroke:#ffffff;stroke-width:4;stroke-linecap:round}
+   .txt{font-family:monospace;font-size:34px;fill:#ffffff;font-weight:bold}
+  </style>
+ </defs>
+ <rect x="12" y="12" width="232" height="232" rx="28" class="board"/>
+ <rect x="68" y="68" width="120" height="120" rx="16" class="chip"/>
+ <!-- legs left -->
+ <g class="leg">
+  <line x1="68" y1="92" x2="44" y2="92"/>
+  <line x1="68" y1="116" x2="44" y2="116"/>
+  <line x1="68" y1="140" x2="44" y2="140"/>
+  <line x1="68" y1="164" x2="44" y2="164"/>
+ </g>
+ <!-- legs right -->
+ <g class="leg">
+  <line x1="188" y1="92" x2="212" y2="92"/>
+  <line x1="188" y1="116" x2="212" y2="116"/>
+  <line x1="188" y1="140" x2="212" y2="140"/>
+  <line x1="188" y1="164" x2="212" y2="164"/>
+ </g>
+ <!-- legs top -->
+ <g class="leg">
+  <line x1="100" y1="68" x2="100" y2="44"/>
+  <line x1="128" y1="68" x2="128" y2="44"/>
+  <line x1="156" y1="68" x2="156" y2="44"/>
+ </g>
+ <!-- legs bottom -->
+ <g class="leg">
+  <line x1="100" y1="188" x2="100" y2="212"/>
+  <line x1="128" y1="188" x2="128" y2="212"/>
+  <line x1="156" y1="188" x2="156" y2="212"/>
+ </g>
+ <text x="128" y="140" text-anchor="middle" class="txt">FW</text>
+ <text x="128" y="178" text-anchor="middle" class="txt" style="font-size:20px">yak</text>
+</svg>

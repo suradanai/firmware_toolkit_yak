@@ -1,0 +1,32 @@
+cd ~/Desktop
+git clone <repo-firmware-workbench> firmware-workbench
+cd firmware-workbench
+
+# เตรียม FMK
+git clone https://github.com/rampageX/firmware-mod-kit.git external/firmware_mod_kit
+cd external/firmware_mod_kit/src
+make -j1
+cd ../../../   # กลับรากโปรเจกต์
+
+# เตรียม venv
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# (ถ้าต้อง binwalk ใหม่)
+pip install binwalk
+
+# รัน
+python app.py
+
+ถ้าอยาก “จัดใหม่เพื่อ Python 3.11 + binwalk git”:
+
+deactivate 2>/dev/null || true
+sudo apt install -y python3.11 python3.11-venv
+python3.11 -m venv .venv311
+source .venv311/bin/activate
+pip install --upgrade pip
+pip install git+https://github.com/ReFirmLabs/binwalk.git
+binwalk --version
+binwalk input/cw4t.bin | head -30

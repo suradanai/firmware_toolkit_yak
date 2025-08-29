@@ -1,0 +1,16 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Firmware Toolkit bY yak
+Name[th]=Firmware Toolkit bY yak
+GenericName=Firmware Toolkit
+GenericName[th]=ชุดเครื่องมือเฟิร์มแวร์
+Comment=Firmware reverse, analysis, patch & AI toolkit
+Comment[th]=ชุดเครื่องมือสำหรับถอด วิเคราะห์ และแพตช์เฟิร์มแวร์ (พร้อม AI)
+Exec=/home/yakdev/Desktop/firmware-workbench/run-gui.sh
+Icon=firmware_toolkit_yak
+Terminal=false
+Categories=Utility;Development;Security;IDE;
+StartupNotify=true
+StartupWMClass=Firmware Toolkit bY yak
+X-GNOME-UsesNotifications=true
