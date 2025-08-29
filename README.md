@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Firmware Toolkit bY yak
 
 Firmware analysis, extraction, patching & GUI toolkit for embedded images (multi-SquashFS, JFFS2, uImage) with AI-assisted heuristics.
@@ -110,3 +111,7 @@ See `CONTRIBUTING.md` for guidelines. Version: refer to `VERSION` file.
 - Add UBIFS support
 - Auto-detect partition table headers
 - Integrate signature / hash verification (uImage CRC re-gen, etc.)
+=======
+# firmware_toolkit_yak
+This program is created to modify the firmware of ip Cam. It may work with some models. The developer is Mr. Suradanai Bunnarong. The information indicates that it may work with some models only.
+>>>>>>> 00e318b41e0b674a3e4d8c70939f4727ae29a932
