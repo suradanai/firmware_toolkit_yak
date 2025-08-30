@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "firmware-toolkit-yak"
+version = "0.1.0"
+description = "Firmware analysis & patch toolkit with GUI"
+requires-python = ">=3.10"
+authors = [ { name="yak" } ]
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = [
+  "PySide6>=6.4.0",
+  "passlib>=1.7.4",
+  "PyYAML>=6.0",
+  "jefferson>=0.4.0",
+  "r2pipe>=1.7.0; platform_system != 'Windows'" # optional radare2 python (if radare2 installed separately)
+]
+
+[tool.setuptools]
+packages = [
+  "dialogs",
+  "core"
+]
+include-package-data = true
+
+[tool.setuptools.package-data]
+dialogs = ["*.py"]
+core = ["*.py"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "-q --ignore=workspaces --ignore=external --ignore=logs --ignore=tmp"

@@ -1,0 +1,127 @@
+[TEMP] serial patch workspace: /tmp/patch-serial-h2prtcw4
+[INFO] ขนาด rootfs เดิม: 3997696 bytes
+เพิ่ม getty ttyS0 ใน inittab สำเร็จ
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-h2prtcw4/unsquashfs /tmp/patch-serial-h2prtcw4/new_rootfs.bin -noappend -comp gzip -b 256K
+[INFO] ขนาด rootfs ใหม่: 4694016 bytes (limit: 3997696 bytes)
+❌ rootfs ใหม่ใหญ่เกินขอบเขตเดิม — พยายามลดขนาดอัตโนมัติ...
+[AI] strip: ดำเนินการ strip บินารี่แล้ว 0 ไฟล์
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-h2prtcw4/unsquashfs /tmp/patch-serial-h2prtcw4/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_strip_binaries ขนาด rootfs: 4694016 bytes
+[AI] ลบ var/log (ประมาณ 0 bytes)
+[AI] ลบ tmp (ประมาณ 0 bytes)
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-h2prtcw4/unsquashfs /tmp/patch-serial-h2prtcw4/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_docs_logs ขนาด rootfs: 4694016 bytes
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-h2prtcw4/unsquashfs /tmp/patch-serial-h2prtcw4/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_unnecessary_files ขนาด rootfs: 4694016 bytes
+[AI] พยายามใช้การบีบอัดที่แรงขึ้น: xz
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-h2prtcw4/unsquashfs /tmp/patch-serial-h2prtcw4/new_rootfs.bin -noappend -comp xz -b 256K -Xdict-size 100%
+[AI] หลังใช้ xz ขนาด rootfs: 3674112 bytes
+[OK] ได้ rootfs ใหม่ขนาด 3674112 bytes หลังการลดอัตโนมัติ
+✅ Patch shell serial สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[TEMP] serial patch workspace: /tmp/patch-serial-wgy_0phr
+[INFO] ขนาด rootfs เดิม: 3997696 bytes
+เพิ่ม getty ttyS0 ใน inittab สำเร็จ
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-wgy_0phr/unsquashfs /tmp/patch-serial-wgy_0phr/new_rootfs.bin -noappend -comp gzip -b 256K
+[INFO] ขนาด rootfs ใหม่: 4694016 bytes (limit: 3997696 bytes)
+❌ rootfs ใหม่ใหญ่เกินขอบเขตเดิม — พยายามลดขนาดอัตโนมัติ...
+[AI] strip: ดำเนินการ strip บินารี่แล้ว 0 ไฟล์
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-wgy_0phr/unsquashfs /tmp/patch-serial-wgy_0phr/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_strip_binaries ขนาด rootfs: 4694016 bytes
+[AI] ลบ var/log (ประมาณ 0 bytes)
+[AI] ลบ tmp (ประมาณ 0 bytes)
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-wgy_0phr/unsquashfs /tmp/patch-serial-wgy_0phr/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_docs_logs ขนาด rootfs: 4694016 bytes
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-wgy_0phr/unsquashfs /tmp/patch-serial-wgy_0phr/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_unnecessary_files ขนาด rootfs: 4694016 bytes
+[AI] พยายามใช้การบีบอัดที่แรงขึ้น: xz
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-wgy_0phr/unsquashfs /tmp/patch-serial-wgy_0phr/new_rootfs.bin -noappend -comp xz -b 256K -Xdict-size 100%
+[AI] หลังใช้ xz ขนาด rootfs: 3674112 bytes
+[OK] ได้ rootfs ใหม่ขนาด 3674112 bytes หลังการลดอัตโนมัติ
+✅ Patch shell serial สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[TEMP] serial patch workspace: /tmp/patch-serial-5skhqs87
+[INFO] ขนาด rootfs เดิม: 3997696 bytes
+[AUTO-TTY] candidates=['ttyS1', 'ttyS0', 'ttyAMA0'] -> เลือก ttyS1
+เพิ่ม getty ttyS1 ใน inittab สำเร็จ
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-5skhqs87/unsquashfs /tmp/patch-serial-5skhqs87/new_rootfs.bin -noappend -comp gzip -b 256K
+[INFO] ขนาด rootfs ใหม่: 4694016 bytes (limit: 3997696 bytes)
+❌ rootfs ใหม่ใหญ่เกินขอบเขตเดิม — พยายามลดขนาดอัตโนมัติ...
+[AI] strip: ดำเนินการ strip บินารี่แล้ว 0 ไฟล์
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-5skhqs87/unsquashfs /tmp/patch-serial-5skhqs87/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_strip_binaries ขนาด rootfs: 4694016 bytes
+[AI] ลบ var/log (ประมาณ 0 bytes)
+[AI] ลบ tmp (ประมาณ 0 bytes)
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-5skhqs87/unsquashfs /tmp/patch-serial-5skhqs87/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_docs_logs ขนาด rootfs: 4694016 bytes
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-5skhqs87/unsquashfs /tmp/patch-serial-5skhqs87/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_unnecessary_files ขนาด rootfs: 4694016 bytes
+[AI] พยายามใช้การบีบอัดที่แรงขึ้น: xz
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-5skhqs87/unsquashfs /tmp/patch-serial-5skhqs87/new_rootfs.bin -noappend -comp xz -b 256K -Xdict-size 100%
+[AI] หลังใช้ xz ขนาด rootfs: 3674112 bytes
+[OK] ได้ rootfs ใหม่ขนาด 3674112 bytes หลังการลดอัตโนมัติ
+✅ Patch shell serial สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[TEMP] serial patch workspace: /tmp/patch-serial-tfh6uwai
+[INFO] ขนาด rootfs เดิม: 3997696 bytes
+[AUTO-TTY] ใช้ค่าที่ผู้ใช้เลือก: ttyS1
+[AUTO-TTY] candidates=['ttyS1', 'ttyS0', 'ttyAMA0'] -> เลือก ttyS1
+เพิ่ม getty ttyS1 ใน inittab สำเร็จ
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-tfh6uwai/unsquashfs /tmp/patch-serial-tfh6uwai/new_rootfs.bin -noappend -comp gzip -b 256K
+[INFO] ขนาด rootfs ใหม่: 4694016 bytes (limit: 3997696 bytes)
+❌ rootfs ใหม่ใหญ่เกินขอบเขตเดิม — พยายามลดขนาดอัตโนมัติ...
+[AI] strip: ดำเนินการ strip บินารี่แล้ว 0 ไฟล์
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-tfh6uwai/unsquashfs /tmp/patch-serial-tfh6uwai/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_strip_binaries ขนาด rootfs: 4694016 bytes
+[AI] ลบ var/log (ประมาณ 0 bytes)
+[AI] ลบ tmp (ประมาณ 0 bytes)
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-tfh6uwai/unsquashfs /tmp/patch-serial-tfh6uwai/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_docs_logs ขนาด rootfs: 4694016 bytes
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-tfh6uwai/unsquashfs /tmp/patch-serial-tfh6uwai/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_unnecessary_files ขนาด rootfs: 4694016 bytes
+[AI] พยายามใช้การบีบอัดที่แรงขึ้น: xz
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-tfh6uwai/unsquashfs /tmp/patch-serial-tfh6uwai/new_rootfs.bin -noappend -comp xz -b 256K -Xdict-size 100%
+[AI] หลังใช้ xz ขนาด rootfs: 3674112 bytes
+[OK] ได้ rootfs ใหม่ขนาด 3674112 bytes หลังการลดอัตโนมัติ
+✅ Patch shell serial สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[TEMP] serial patch workspace: /tmp/patch-serial-_q9hxpwd
+[INFO] ขนาด rootfs เดิม: 3997696 bytes
+[AUTO-TTY] ใช้ค่าที่ผู้ใช้เลือก: ttyS1
+[AUTO-TTY] candidates=['ttyS1', 'ttyS0', 'ttyAMA0'] -> เลือก ttyS1
+เพิ่ม getty ttyS1 ใน inittab สำเร็จ
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-_q9hxpwd/unsquashfs /tmp/patch-serial-_q9hxpwd/new_rootfs.bin -noappend -comp gzip -b 256K
+[INFO] ขนาด rootfs ใหม่: 4694016 bytes (limit: 3997696 bytes)
+❌ rootfs ใหม่ใหญ่เกินขอบเขตเดิม — พยายามลดขนาดอัตโนมัติ...
+[AI] strip: ดำเนินการ strip บินารี่แล้ว 0 ไฟล์
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-_q9hxpwd/unsquashfs /tmp/patch-serial-_q9hxpwd/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_strip_binaries ขนาด rootfs: 4694016 bytes
+[AI] ลบ var/log (ประมาณ 0 bytes)
+[AI] ลบ tmp (ประมาณ 0 bytes)
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-_q9hxpwd/unsquashfs /tmp/patch-serial-_q9hxpwd/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_docs_logs ขนาด rootfs: 4694016 bytes
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-_q9hxpwd/unsquashfs /tmp/patch-serial-_q9hxpwd/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_unnecessary_files ขนาด rootfs: 4694016 bytes
+[AI] พยายามใช้การบีบอัดที่แรงขึ้น: xz
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-_q9hxpwd/unsquashfs /tmp/patch-serial-_q9hxpwd/new_rootfs.bin -noappend -comp xz -b 256K -Xdict-size 100%
+[AI] หลังใช้ xz ขนาด rootfs: 3674112 bytes
+[OK] ได้ rootfs ใหม่ขนาด 3674112 bytes หลังการลดอัตโนมัติ
+✅ Patch shell serial สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_patched_cw4t.bin
+[TEMP] serial patch workspace: /tmp/patch-serial-0suydors
+[INFO] ขนาด rootfs เดิม: 3997696 bytes
+[AUTO-TTY] ใช้ค่าที่ผู้ใช้เลือก: ttyS1
+[AUTO-TTY] candidates=['ttyS1', 'ttyS0', 'ttyAMA0'] -> เลือก ttyS1
+เพิ่ม getty ttyS1 ใน inittab สำเร็จ
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-0suydors/unsquashfs /tmp/patch-serial-0suydors/new_rootfs.bin -noappend -comp gzip -b 256K
+[INFO] ขนาด rootfs ใหม่: 4694016 bytes (limit: 3997696 bytes)
+❌ rootfs ใหม่ใหญ่เกินขอบเขตเดิม — พยายามลดขนาดอัตโนมัติ...
+[AI] strip: ดำเนินการ strip บินารี่แล้ว 0 ไฟล์
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-0suydors/unsquashfs /tmp/patch-serial-0suydors/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_strip_binaries ขนาด rootfs: 4694016 bytes
+[AI] ลบ var/log (ประมาณ 0 bytes)
+[AI] ลบ tmp (ประมาณ 0 bytes)
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-0suydors/unsquashfs /tmp/patch-serial-0suydors/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_docs_logs ขนาด rootfs: 4694016 bytes
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-0suydors/unsquashfs /tmp/patch-serial-0suydors/new_rootfs.bin -noappend -comp gzip -b 256K
+[AI] หลัง step_remove_unnecessary_files ขนาด rootfs: 4694016 bytes
+[AI] พยายามใช้การบีบอัดที่แรงขึ้น: xz
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-serial-0suydors/unsquashfs /tmp/patch-serial-0suydors/new_rootfs.bin -noappend -comp xz -b 256K -Xdict-size 100%
+[AI] หลังใช้ xz ขนาด rootfs: 3674112 bytes
+[OK] ได้ rootfs ใหม่ขนาด 3674112 bytes หลังการลดอัตโนมัติ
+✅ Patch shell serial สำเร็จ: /home/yakdev/Desktop/yakDEV Repository/firmware_toolkit_yak/output/patched_cw4t.bin

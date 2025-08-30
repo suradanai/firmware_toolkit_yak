@@ -1,0 +1,177 @@
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-78c6l8vh
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-oj8t7zi_
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-b07hmp4w
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-14zg2v7n
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-r_8tyn5z
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-bivvylcf
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-buq22qc1
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-opfg__m3
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-rpevb474
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-1ad658ie
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-1pykktsq
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-gzsqu1nr
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-lbszz_q_
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-n9t_7_v1
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-z42gs9il
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-io49rq44
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-y3096oi4
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-iwm28arn
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-pgxlusye
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-zp1ykhbh
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-e_2aotdl
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-egxtig8z
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-iiekg1tg
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-f1zdky5x
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-t_d7rbrh
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-k8miptr6
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-7ai2itix
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-szan41nc
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-r26lsc0x
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-ize85vvh
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-0pc3szkx
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-94sk58t0
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-_92z80mg
+พบ rootfs 3 ชุด: ['squashfs@0x240000', 'squashfs@0x610000', 'squashfs@0xBC0000']
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-t5k3jll8
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-r2m9dskq
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==
+[TEMP] ai analysis workspace: /tmp/ai-fw-rootfs-js5mz2jh
+== RootFS #1: squashfs @0x240000 size=0x3D0000 ==
+== RootFS #2: squashfs @0x610000 size=0x5B0000 ==
+== RootFS #3: squashfs @0xBC0000 size=0x440000 ==

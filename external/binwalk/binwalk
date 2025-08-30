@@ -1,0 +1,61 @@
+#!/bin/sh
+# Wrapper to prefer system binwalk but retry alternative invocations when
+# certain argument parsing errors occur (some binwalk installs parse args
+# differently). Tries, in order:
+# 1) exec binwalk "$@"
+# 2) python3 -m binwalk "$@"
+# 3) python3 -m binwalk -- "$@"  (force pass-through)
+
+run_binwalk() {
+  if command -v binwalk >/dev/null 2>&1; then
+    binwalk "$@"
+    return $?
+  fi
+  return 127
+}
+
+run_module() {
+  # run python module invocation
+  python3 -m binwalk "$@"
+  return $?
+}
+
+# Try system binwalk first
+if command -v binwalk >/dev/null 2>&1; then
+  # run and capture stderr
+  out=$(binwalk "$@" 2>&1 >/dev/null)
+  rc=$?
+  if [ $rc -eq 0 ]; then
+    exit 0
+  fi
+  # if it complained about unexpected args, try with a '--' separator
+  case "$out" in
+    *"unexpected argument"*|*"unknown option"*|*"tip: to pass"*)
+      echo "[wrapper] binwalk rejected args; retrying with '--' separator" >&2
+      binwalk -- "$@"
+      exit $?
+      ;;
+    *)
+      echo "$out" >&2
+      exit $rc
+      ;;
+  esac
+fi
+
+# Try python module invocation if available
+if python3 - <<'PY' 2>/dev/null
+try:
+    import binwalk
+    print('OK')
+except Exception:
+    pass
+PY
+then
+  # Some binwalk installs are packages and not modules runnable with -m; prefer system binwalk.
+  # We'll try python -m binwalk with pass-through and fall back to error message.
+  python3 -m binwalk -- "$@" 2>/dev/null || python3 -m binwalk "$@" 2>/dev/null || echo "binwalk Python package present but cannot execute as module; please install CLI binwalk." >&2
+  exit 0
+fi
+
+echo "binwalk not found. Please install system binwalk or 'pip install binwalk3'" >&2
+exit 2

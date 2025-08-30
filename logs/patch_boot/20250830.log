@@ -1,0 +1,57 @@
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+[INFO] ลอง deep scan + patch ทุกบล็อค
+[UBOOT] ไม่พบ env สำหรับ patch-all
+[INFO] ใช้ fallback แก้ byte @0x100
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[VERIFY] env bootdelay values now: ['0', '0']
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+[INFO] ลอง deep scan + patch ทุกบล็อค
+[UBOOT] ไม่พบ env สำหรับ patch-all
+[INFO] ใช้ fallback แก้ byte @0x100
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_cw4t.bin
+[VERIFY] env bootdelay values now: ['0', '0']
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+[INFO] ลอง deep scan + patch ทุกบล็อค
+[UBOOT] ไม่พบ env สำหรับ patch-all
+[INFO] ลอง patch bootdelay ภายใน U-Boot binary
+[UBOOT] compiled bootdelay patch 0->3 at 0x30616
+[VERIFY] env bootdelay values now: ['3', '3']
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+[INFO] ลอง deep scan + patch ทุกบล็อค
+[UBOOT] ไม่พบ env สำหรับ patch-all
+[INFO] ลอง patch bootdelay ภายใน U-Boot binary
+[INFO] ใช้ fallback แก้ byte @0x100
+✅ Patch boot delay ที่ offset 0x100 เป็น 3 วินาที สำเร็จ: /home/yakdev/Desktop/firmware_toolkit_yak/output/patched_patched_cw4t.bin
+[VERIFY] env bootdelay values now: ['3', '3']
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+[INFO] ลอง deep scan + patch ทุกบล็อค
+[UBOOT] ไม่พบ env สำหรับ patch-all
+[INFO] ลอง patch bootdelay ภายใน U-Boot binary
+[UBOOT] compiled bootdelay patch 3->1 at 0x30616
+[VERIFY] env bootdelay values now: ['1', '1']
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+[INFO] ลอง deep scan + patch ทุกบล็อค
+[UBOOT] ไม่พบ env สำหรับ patch-all
+[INFO] ลอง patch bootdelay ภายใน U-Boot binary
+[UBOOT] compiled bootdelay patch 0->1 at 0x30616
+[VERIFY] env bootdelay values now: ['1', '1']
+[UBOOT] ไม่พบ environment สำหรับแก้ไข
+[INFO] ลอง deep scan + patch ทุกบล็อค
+[UBOOT] ไม่พบ env สำหรับ patch-all
+[INFO] ลอง patch bootdelay ภายใน U-Boot binary
+[UBOOT] compiled bootdelay patch 0->3 at 0x30616
+[VERIFY] env bootdelay values now: ['3', '3']

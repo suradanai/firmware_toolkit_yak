@@ -1,0 +1,13 @@
+-- RootFS#1: squashfs size=0x3D0000
+ไฟล์: 408
+พบ etc/passwd
+พบ etc/shadow
+พบ etc/inittab
+ไม่พบ etc/inetd.conf
+บันทึก /home/yakdev/Desktop/firmware_toolkit_yak/logs/analysis/ai_rootfs1_squashfs_0x240000_20250830_135156.txt
+-- RootFS#2: squashfs size=0x5B0000
+ไฟล์: 48
+ไม่พบ etc/passwd
+ไม่พบ etc/shadow
+ไม่พบ etc/inittab
+ไม่พบ etc/inetd.conf

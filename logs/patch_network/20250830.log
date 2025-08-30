@@ -1,0 +1,4 @@
+[TEMP] network patch workspace: /tmp/patch-net-41kv_a1_
+ไม่พบ etc/inetd.conf (อาจไม่มีบริการ telnet/ftp)
+[INFO] repack squashfs: /usr/bin/mksquashfs /tmp/patch-net-41kv_a1_/unsquashfs /tmp/patch-net-41kv_a1_/new_rootfs.bin -noappend -comp gzip -b 256K
+❌ rootfs ใหม่ใหญ่เกินขอบเขตเดิม ไม่สามารถ patch ได้
