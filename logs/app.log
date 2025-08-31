@@ -1,0 +1,24 @@
+nohup: ignoring input
+[RUN-GUI] Using existing virtualenv: .venv
+[RUN-GUI] PySide6 already present -> skip bulk install (use --reinstall-reqs to force).
+[RUN-GUI] Fallback (no __main__ guard) GUI file: /home/yakdev/Desktop/yakDEV Repository/firmware_toolkit_yak/app.py
+[RUN-GUI] Launching GUI...
+[STREAM] Launched GUI with nohup
+nohup: ignoring input
+[RUN-GUI] Using existing virtualenv: .venv
+[RUN-GUI] PySide6 already present -> skip bulk install (use --reinstall-reqs to force).
+[RUN-GUI] Fallback (no __main__ guard) GUI file: /home/yakdev/Desktop/yakDEV Repository/firmware_toolkit_yak/app.py
+[RUN-GUI] Launching GUI...
+nohup: ignoring input
+[STREAM] Launched GUI with nohup at 2025-08-31T16:39:18Z
+[RUN-GUI] Using existing virtualenv: .venv
+[STREAM] ---- BEGIN LIVE TAIL ----
+[RUN-GUI] PySide6 already present -> skip bulk install (use --reinstall-reqs to force).
+[RUN-GUI] Fallback (no __main__ guard) GUI file: /home/yakdev/Desktop/yakDEV Repository/firmware_toolkit_yak/app.py
+[RUN-GUI] Launching GUI...
+[STREAM] ---- BEGIN LIVE TAIL ----
+nohup: ignoring input
+[RUN-GUI] Using existing virtualenv: .venv
+[RUN-GUI] PySide6 already present -> skip bulk install (use --reinstall-reqs to force).
+[RUN-GUI] Fallback (no __main__ guard) GUI file: /home/yakdev/Desktop/yakDEV Repository/firmware_toolkit_yak/app.py
+[RUN-GUI] Launching GUI...

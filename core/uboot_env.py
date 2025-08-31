@@ -174,3 +174,35 @@ def patch_uboot_env_vars(src_fw, dst_fw, off, size, updates: dict, log_func: Log
     with open(dst_fw,'wb') as f: f.write(new_whole)
     log_func(f'[UBOOT] updated vars: {", ".join(updates.keys())}')
     return True
+
+
+def compose_updated_env_block(block_bytes: bytes, updates: dict) -> bytes:
+    """Given a raw env block (including 4-byte CRC and data), return a new block with updates applied and CRC recalculated."""
+    import binascii
+    if len(block_bytes) < 8:
+        raise ValueError('block too small')
+    stored_crc = struct.unpack('<I', block_bytes[:4])[0]
+    data = block_bytes[4:]
+    end_double = data.find(b'\x00\x00')
+    if end_double == -1:
+        raise ValueError('no double null in block')
+    env_region = data[:end_double+1]
+    vars_list = []
+    for raw in env_region.split(b'\x00'):
+        if not raw or b'=' not in raw: continue
+        k,v = raw.split(b'=',1)
+        try:
+            vars_list.append([k.decode(), v.decode(errors='ignore')])
+        except Exception:
+            continue
+    kv_index = {k:i for i,(k,v) in enumerate(vars_list)}
+    for k,v in updates.items():
+        if k in kv_index:
+            vars_list[kv_index[k]][1] = str(v)
+        else:
+            vars_list.append([k, str(v)])
+    kv_bytes = b''.join(f"{k}={v}".encode()+b'\x00' for k,v in vars_list)
+    new_env_region = kv_bytes + b'\x00'
+    new_crc = binascii.crc32(new_env_region) & 0xffffffff
+    new_block = struct.pack('<I', new_crc) + new_env_region + data[end_double+2:]
+    return new_block

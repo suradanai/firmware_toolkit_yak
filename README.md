@@ -87,6 +87,21 @@ On first GUI launch you will be asked to grant consent (patching, external tools
 - JFFS2 nodes are unified into one partition by default. Use `--multi-jffs2` only for debugging.
 - Repacking does not recalculate external checksums/signatures beyond replacing raw partitions. If the device uses additional integrity layers (e.g., header CRC beyond uImage, secure boot), more tooling is needed.
 
+## GUI: Multi-Squash (Tools)
+
+The GUI includes a Tools → "Multi-Squash" page which can detect and optionally shrink multiple embedded SquashFS partitions inside a firmware image.
+
+- Select a firmware file via the main dashboard (Open Firmware).
+- Open Tools → Multi-Squash and press "Multi-Squash: Dry-run" to inspect detected parts.
+- To run the shrink+repack pipeline, enable "Allow destructive trimming" if you want logs/tmp removed, then press "Multi-Squash: Apply".
+
+Artifacts are written to the `output/` folder and include:
+- patched firmware: `<orig>_patched.bin`
+- gzip backup: `<orig>_patched.bin.gz`
+- checksums: `output/SHA256SUMS`
+- binary diff (fallback): `output/binary_diff.txt`
+- metadata: `output/<patched>.meta.json`
+
 ## Desktop Shortcut (Manual)
 
 ```bash

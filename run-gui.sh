@@ -131,14 +131,14 @@ detect_gui_entry() {
   # Heuristic: ลองหาไฟล์ที่มี QApplication หรือ QMainWindow
   local candidates
   # จำกัดความลึก 3 ระดับ เพื่อลด noise
-  mapfile -t candidates < <(grep -RIl --include="*.py" -E "QApplication|QMainWindow" "$PROJECT_ROOT" 2>/dev/null | head -n 10 || true)
+  mapfile -t candidates < <(grep -RIl --include="*.py" -E "QApplication|QMainWindow" "$PROJECT_ROOT" 2>/dev/null | head -n 50 || true)
 
   for f in "${candidates[@]}"; do
-    # ข้ามไฟล์ใน .venv / external
-    if [[ "$f" == *"/$VENV_DIR/"* ]] || [[ "$f" == *"/external/"* ]]; then
+    # Skip files in .venv, external, tools, tests or obvious smoke/test runners
+    if [[ "$f" == *"/$VENV_DIR/"* ]] || [[ "$f" == *"/external/"* ]] || [[ "$f" == *"/tools/"* ]] || [[ "$f" == *"/tests/"* ]] || [[ "$f" == *"smoke"* ]] || [[ "$f" == *"interactive"* ]] || [[ "$f" == *"test_"* ]]; then
       continue
     fi
-    # ถ้ามี if __name__ == "__main__" ถือว่าเป็นไฟล์ runnable
+    # If the file has a __main__ guard, prefer it as runnable GUI entry
     if grep -q '__main__' "$f"; then
       GUI_FILE="$f"
       log "Auto-detected GUI file: $GUI_FILE"

@@ -80,9 +80,9 @@ info "Scanning firmware ..."
 binwalk "$FW" > "$SCAN"
 SIZE=$(stat -c%s "$FW")
 info "Firmware size: $SIZE bytes"
-
 declare -a RAW_OFFSETS RAW_TYPES RAW_LINES
-grep -E "Squashfs filesystem|JFFS2 filesystem|uImage header" "$SCAN" 2>/dev/null | \
+# Read grep output via process substitution so the while loop runs in the current shell
+# (avoids subshell which makes arrays unset later under set -euo pipefail)
 while IFS= read -r line; do
   [[ $line =~ ^[[:space:]]*([0-9]+)[[:space:]]+0x[0-9A-Fa-f]+[[:space:]]+(.+) ]] || continue
   off=${BASH_REMATCH[1]}
@@ -94,7 +94,7 @@ while IFS= read -r line; do
     t="uimage"
   fi
   [ -n "$t" ] && RAW_OFFSETS+=("$off") && RAW_TYPES+=("$t") && RAW_LINES+=("$line")
-done
+done < <(grep -E "Squashfs filesystem|JFFS2 filesystem|uImage header" "$SCAN" 2>/dev/null)
 
 COUNT=${#RAW_OFFSETS[@]}
 [ $COUNT -gt 0 ] || { printf "[ERR] no signatures found\n"; exit 4; }
@@ -113,8 +113,13 @@ push_segment(){
 }
 
 next_region_offset(){
-  local idx=$1 base=${RAW_OFFSETS[$idx]}
-  local n=$SIZE j
+  local idx
+  idx="$1"
+  local base
+  base="${RAW_OFFSETS[$idx]:-0}"
+  local n
+  n=$SIZE
+  local j
   for ((j=idx+1;j<COUNT;j++)); do
     local o=${RAW_OFFSETS[$j]}
     if [ "$o" -gt "$base" ]; then
@@ -200,7 +205,7 @@ for ((i=0;i<${#SEG_TYPE[@]};i++)); do
 done
 
 {
-  printf "%-4s %-10s %-10s %-10s %-10s %s\n" IDX TYPE OFFSET LENGTH END EXTRA
+  printf "%-4s %-10s %-10s %-10s %-10s %s\n" "IDX" "TYPE" "OFFSET" "LENGTH" "END" "EXTRA"
   for ((i=0;i<${#F_TYPE[@]};i++)); do
     o=${F_OFFSET[$i]} l=${F_LENGTH[$i]} e=$((o+l))
     printf "%-4s %-10s 0x%08X 0x%08X 0x%08X %s\n" "$i" "${F_TYPE[$i]}" "$o" "$l" "$e" "${F_EXTRA[$i]}"

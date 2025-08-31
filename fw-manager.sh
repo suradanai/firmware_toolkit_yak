@@ -23,10 +23,12 @@ die(){ log "ERROR: $*"; exit 1; }
 sanitize_firmware_path() {
   local orig="$1"
   [ -f "$orig" ] || die "Firmware not found: $orig"
-  if [[ "$orig" =~ [[:space:]] ]]; then
-    mkdir -p "$PROJECT_ROOT/input_sanitized"
+  # If firmware path contains spaces or PROJECT_ROOT contains spaces, copy to /tmp
+  if [[ "$orig" =~ [[:space:]] ]] || [[ "$PROJECT_ROOT" =~ [[:space:]] ]]; then
+    local tmpdir="/tmp/fwkit_input_sanitized"
+    mkdir -p "$tmpdir"
     local base="$(basename "$orig")"
-    local safe="$PROJECT_ROOT/input_sanitized/${base// /_}"
+    local safe="$tmpdir/${base// /_}"
     if [ ! -f "$safe" ]; then
       cp -- "$orig" "$safe"
       log "Sanitized copy -> $safe"
@@ -91,6 +93,20 @@ do_extract() {
   local ws_abs
   ws_abs="$(realpath -m "$PROJECT_ROOT/$ws_rel")"
   mkdir -p "$ws_abs"  # create output root early
+
+  # If PROJECT_ROOT (or resulting ws_abs) contains spaces some FMK tools break.
+  # Create a sanitized workspace root under PROJECT_ROOT/workspaces_sanitized
+  # and use that path (no spaces) when calling FMK scripts.
+  if [[ "$ws_abs" =~ [[:space:]] ]] || [[ "$PROJECT_ROOT" =~ [[:space:]] ]]; then
+    # Put sanitized workspaces under /tmp to avoid any spaces in paths
+    local sanitized_root="/tmp/fwkit_workspaces"
+    mkdir -p "$sanitized_root"
+    local ws_name
+    ws_name="ws_$(date +%Y%m%d_%H%M%S)"
+    ws_abs="$(realpath -m "$sanitized_root/$ws_name")"
+    mkdir -p "$ws_abs"
+    log "Sanitized workspace -> $ws_abs"
+  fi
 
   log "Attempt multi-squash via FMK -> $ws_abs"
   local multi_err
