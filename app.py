@@ -3352,8 +3352,26 @@ class MainWindow(QMainWindow):
             if not hasattr(self, 'edit_cache_dir') or getattr(self, 'edit_cache_part_index', None) != self.rootfs_part_spin.value()-1:
                 tmp = tempfile.mkdtemp(prefix='rfse_cache_')
                 rootfs_bin = os.path.join(tmp, 'rootfs.bin')
+                slice_size = part['size']
+                # --- SquashFS size probing (unsquashfs -s -o <offset>) ---
+                if part['fs'] in ('squashfs','auto'):
+                    sys_unsq = shutil.which('unsquashfs')
+                    if sys_unsq:
+                        try:
+                            import re, subprocess as _sub
+                            cmd = [sys_unsq,'-s','-o', str(part['offset']), self.fw_path]
+                            p = _sub.run(cmd, stdout=_sub.PIPE, stderr=_sub.STDOUT, text=True, timeout=10)
+                            if p.returncode == 0 and p.stdout:
+                                m = re.search(r'Filesystem size\s+(\d+)\s+bytes', p.stdout)
+                                if m:
+                                    probed = int(m.group(1))
+                                    if probed > slice_size and probed < 128*1024*1024:  # sanity cap 128MB
+                                        self.log(f"[ROOTFS-EDITOR] adjust slice_size {slice_size} -> {probed} (probed)")
+                                        slice_size = probed
+                        except Exception as pe:
+                            self.log(f"[ROOTFS-EDITOR] probe size failed: {pe}")
                 with open(self.fw_path,'rb') as f:
-                    f.seek(part['offset']); blob = f.read(part['size'])
+                    f.seek(part['offset']); blob = f.read(slice_size)
                 with open(rootfs_bin,'wb') as f: f.write(blob)
                 extract_dir = os.path.join(tmp,'extract'); os.makedirs(extract_dir, exist_ok=True)
                 fs_type = part['fs'] or 'auto'
@@ -3362,6 +3380,23 @@ class MainWindow(QMainWindow):
                 if not ok and fs_type != 'auto':
                     self.log(f"[ROOTFS-EDITOR] retry auto after {fs_type} fail: {err}")
                     ok, err = extract_rootfs('auto', rootfs_bin, extract_dir, self.log)
+                # --- Fallback: if still failing and small slice, try extended carve (increase window) ---
+                if not ok and slice_size < 2*1024*1024 and part['fs'] in ('squashfs','auto'):
+                    try:
+                        max_extend = min(os.path.getsize(self.fw_path) - part['offset'], 16*1024*1024)
+                        if max_extend > slice_size:
+                            new_size = max_extend
+                            self.log(f"[ROOTFS-EDITOR] extend slice and retry: {slice_size} -> {new_size}")
+                            with open(self.fw_path,'rb') as f:
+                                f.seek(part['offset']); blob = f.read(new_size)
+                            with open(rootfs_bin,'wb') as f: f.write(blob)
+                            ok2, err2 = extract_rootfs('squashfs', rootfs_bin, extract_dir, self.log)
+                            if not ok2:
+                                self.log(f"[ROOTFS-EDITOR] extended retry failed: {err2}")
+                            else:
+                                ok = True; err = ''
+                    except Exception as fe:
+                        self.log(f"[ROOTFS-EDITOR] extend slice exception: {fe}")
                 if not ok:
                     QMessageBox.critical(self,'RootFS', f'Extract failed: {err}'); return
                 self.edit_cache_dir = extract_dir
