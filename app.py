@@ -1996,7 +1996,7 @@ class MainWindow(QMainWindow):
                 {'id':'env_scan','text':'Scan U-Boot Env (v2)'}], 'page':page_special},
             {'key':'settings','title':'Settings','color':'#455A64','submenu':[], 'page':page_settings},
         ]
-    self.ACTION_ICONS = {
+        self.ACTION_ICONS = {
             ('patch','boot_delay'):'⏱️',
             ('patch','serial'):'🖧',
             ('patch','network'):'🌐',
