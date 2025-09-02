@@ -1967,9 +1967,6 @@ class MainWindow(QMainWindow):
 
         # Declarative menu structure (refactored & consolidated)
         self.MENU_STRUCTURE = [
-            {'key':'dashboard','title':'Dashboard','color':'#2962FF','submenu':[
-                {'id':'analyze','text':'วิเคราะห์เฟิร์มแวร์ (Analyze)'},
-                {'id':'apply_pipeline','text':'Apply suggested pipeline'}], 'page':page_dashboard},
             {'key':'patch','title':'Patching','color':'#AD1457','submenu':[
                 {'id':None,'text':'— Core Patches —'},
                 {'id':'boot_delay','text':'Boot Delay'},
@@ -1999,9 +1996,7 @@ class MainWindow(QMainWindow):
                 {'id':'env_scan','text':'Scan U-Boot Env (v2)'}], 'page':page_special},
             {'key':'settings','title':'Settings','color':'#455A64','submenu':[], 'page':page_settings},
         ]
-        self.ACTION_ICONS = {
-            ('dashboard','analyze'):'🔍',
-            ('dashboard','apply_pipeline'):'⚙️',
+    self.ACTION_ICONS = {
             ('patch','boot_delay'):'⏱️',
             ('patch','serial'):'🖧',
             ('patch','network'):'🌐',
@@ -2668,8 +2663,26 @@ class MainWindow(QMainWindow):
         if path:
             self.fw_path = path
             self.log(f'Selected {path}')
-            # Manual mode: no automatic analysis/patching
-            self.log('[INFO] Manual mode: click "Analyze Firmware" to generate suggestions.')
+            # Start automatic AI analysis immediately (replaces dashboard manual step)
+            try:
+                self.start_auto_analysis()
+            except Exception as e:
+                self.log(f'[AI] auto analysis start error: {e}')
+            self.log('[AI] เริ่มวิเคราะห์อัตโนมัติ / Auto analysis started')
+
+    def start_auto_analysis(self):
+        if not getattr(self, 'fw_path', None):
+            return
+        if getattr(self, '_analysis_running', False):
+            self.log('[AI] analysis already running')
+            return
+        self._analysis_running = True
+        def _run():
+            try:
+                self.ai_orchestrator(manual=False)
+            finally:
+                self._analysis_running = False
+        threading.Thread(target=_run, daemon=True).start()
 
     def start_manual_analysis(self):
         if not getattr(self, 'fw_path', None):
@@ -3195,7 +3208,13 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.thread_log.emit(f'[AI] rootfs/uboot detection error: {e}')
 
-            # 4) skip auto patch probing in manual analysis mode
+            # 4) Optional deeper rootfs sampling for insights (only in auto mode)
+            rootfs_insights = {}
+            try:
+                if not manual:
+                    rootfs_insights = self._sample_rootfs_for_insights(max_bytes=64*1024)
+            except Exception as e:
+                self.thread_log.emit(f'[AI] rootfs sample error: {e}')
 
             # 5) collect detailed findings and write ai.summary
             try:
@@ -3213,6 +3232,20 @@ class MainWindow(QMainWindow):
                     env_blocks = scan_uboot_env(self.fw_path, deep=True)
                     findings['uboot_envs'] = env_blocks
                     findings['uboot_findings'] = analyze_bootloader_env(env_blocks)
+                    # bootdelay via env parsing
+                    bootdelay_vals = []
+                    for blk in env_blocks:
+                        kv = blk.get('kv', {}) if isinstance(blk, dict) else {}
+                        if 'bootdelay' in kv:
+                            try:
+                                bootdelay_vals.append(int(kv['bootdelay'].strip(), 0))
+                            except Exception:
+                                pass
+                    if bootdelay_vals:
+                        findings['bootdelay_env'] = bootdelay_vals[0]
+                        findings['bootdelay_env_all'] = bootdelay_vals
+                    else:
+                        findings['bootdelay_env'] = None
                 except Exception:
                     findings['uboot_envs'] = []
                     findings['uboot_findings'] = ['scan error']
@@ -3222,6 +3255,14 @@ class MainWindow(QMainWindow):
                     findings['bootdelay_byte'] = bd
                 except Exception:
                     findings['bootdelay_byte'] = None
+                # Derive unified bootdelay value preference env over raw
+                findings['bootdelay_effective'] = findings.get('bootdelay_env') if findings.get('bootdelay_env') is not None else findings.get('bootdelay_byte')
+                # rootfs insights merged
+                findings['rootfs_insights'] = rootfs_insights
+                # Shell console status heuristic
+                findings['shell_console'] = rootfs_insights.get('shell_console_enabled') if rootfs_insights else None
+                # Root password status
+                findings['root_password_status'] = rootfs_insights.get('root_password_status') if rootfs_insights else None
                 # suggested patches
                 suggestions = []
                 if findings.get('parts'):
@@ -3229,8 +3270,8 @@ class MainWindow(QMainWindow):
                     suggestions.append({'action': 'patch_network', 'reason': 'rootfs parts detected'})
                 else:
                     suggestions.append({'action': 'patch_serial', 'reason': 'no rootfs parts; binwalk fallback may be required'})
-                if findings.get('bootdelay_byte') is not None:
-                    suggestions.insert(0, {'action': 'patch_boot_delay', 'reason': 'bootdelay byte found at 0x100'})
+                if findings.get('bootdelay_effective') is not None:
+                    suggestions.insert(0, {'action': 'patch_boot_delay', 'reason': 'bootdelay detected'})
                 findings['suggested_patches'] = suggestions
 
                 meta_path = os.path.join(self.output_dir, os.path.basename(self.fw_path) + '.ai.summary.json')
@@ -3266,6 +3307,78 @@ class MainWindow(QMainWindow):
         except Exception as e:
             try: self.thread_log.emit(f'[AI] orchestrator error: {e}')
             except Exception: pass
+
+    def _sample_rootfs_for_insights(self, max_bytes: int = 65536):
+        """Extract first detected rootfs (squashfs/cramfs) to temp dir and derive insights.
+        Returns dict with keys: shell_console_enabled, root_password_status, evidence.
+        Light-weight: stops after first part and limits file reads."""
+        insights = {'shell_console_enabled': None, 'root_password_status': None, 'evidence': []}
+        try:
+            parts = multisquash.detect_squashfs(self.fw_path)
+            if not parts:
+                return insights
+            part0 = parts[0]
+            import tempfile
+            tmpdir = tempfile.mkdtemp(prefix='ai_rootfs_')
+            try:
+                part_file = os.path.join(tmpdir, 'part0.bin')
+                with open(self.fw_path, 'rb') as f:
+                    f.seek(part0.offset); data = f.read(part0.size if part0.size < max_bytes else max_bytes)
+                with open(part_file, 'wb') as pf: pf.write(data)
+                extract_dir = os.path.join(tmpdir, 'rootfs'); os.makedirs(extract_dir, exist_ok=True)
+                ok, err = extract_rootfs('auto', self.fw_path, extract_dir, lambda m: None)
+                if not ok:
+                    insights['evidence'].append(f'extract fail: {err}')
+                    return insights
+                # Inspect /etc/inittab and /etc/passwd
+                inittab = os.path.join(extract_dir, 'etc', 'inittab')
+                passwd = os.path.join(extract_dir, 'etc', 'passwd')
+                shadow = os.path.join(extract_dir, 'etc', 'shadow')
+                shell_enabled = False
+                if os.path.exists(inittab):
+                    try:
+                        with open(inittab,'r',errors='ignore') as f: txt=f.read().lower()
+                        for token in ('getty','ttyS0','ttyAMA0','ttyUSB0'):
+                            if token.lower() in txt:
+                                shell_enabled=True; insights['evidence'].append(f'inittab:{token}')
+                                break
+                    except Exception: pass
+                # passwd root shell
+                root_status = None
+                if os.path.exists(passwd):
+                    try:
+                        with open(passwd,'r',errors='ignore') as f:
+                            for line in f:
+                                if line.startswith('root:'):
+                                    parts_line=line.strip().split(':')
+                                    if len(parts_line) > 6:
+                                        shell_field = parts_line[-1]
+                                        if shell_field not in ('/bin/false','/sbin/nologin','/usr/sbin/nologin'):
+                                            shell_enabled = True
+                                            insights['evidence'].append(f'root_shell:{shell_field}')
+                                    pwd_field = parts_line[1]
+                                    if pwd_field in ('x','*','!','!!'): root_status='shadow'
+                                    elif pwd_field == '': root_status='empty'
+                                    else: root_status='hash_inline'
+                                    break
+                    except Exception: pass
+                if root_status == 'shadow' and os.path.exists(shadow):
+                    try:
+                        with open(shadow,'r',errors='ignore') as f:
+                            for line in f:
+                                if line.startswith('root:'):
+                                    hash_field=line.split(':',1)[1].split(':',1)[0]
+                                    if hash_field in ('*','!','!!',''): root_status='locked'
+                                    else: root_status='hash'
+                                    break
+                    except Exception: pass
+                insights['shell_console_enabled'] = shell_enabled
+                insights['root_password_status'] = root_status
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+        except Exception as e:
+            insights['evidence'].append(f'exception:{e}')
+        return insights
 
     def run_deep_scan(self):
         try:
