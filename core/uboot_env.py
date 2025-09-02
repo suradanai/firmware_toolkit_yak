@@ -73,6 +73,55 @@ def scan_uboot_env(fw_path, max_search=0x200000, env_sizes=(0x1000,0x2000,0x4000
             dedup[key]=r
     out=list(dedup.values())
     out.sort(key=lambda r:(-r.get('score',0), r['offset']))
+    if out:
+        return out
+    # Fallback heuristic: search for ASCII patterns 'bootdelay=' & 'bootcmd='
+    try:
+        with open(fw_path,'rb') as f:
+            data=f.read(min(max_search, 2*1024*1024))
+        markers=[]
+        for pat in (b'bootdelay=', b'bootcmd=', b'bootargs='):
+            idx=0
+            while True:
+                pos=data.find(pat, idx)
+                if pos==-1: break
+                markers.append(pos)
+                idx=pos+1
+        markers=sorted(set(markers))
+        clusters=[]
+        # group markers within 8KB region
+        for m in markers:
+            placed=False
+            for cl in clusters:
+                if abs(m-cl[0])<0x2000:
+                    cl.append(m); placed=True; break
+            if not placed: clusters.append([m])
+        pseudo=[]
+        for cl in clusters:
+            start=max(0, min(cl)-512)
+            seg=data[start:start+0x3000]
+            # naive split by NUL and newline
+            raw_vars=[]
+            for token in seg.split(b'\x00')[:400]:
+                if b'=' in token and 1<len(token)<256 and token.count(b'=')==1:
+                    raw_vars.append(token)
+            kv={}
+            for rv in raw_vars:
+                try:
+                    k,v=rv.split(b'=',1)
+                    k=k.decode(); v=v.decode(errors='ignore')
+                except Exception:
+                    continue
+                if not k.isprintable() or any(ord(c)<32 for c in k):
+                    continue
+                kv[k]=v
+            if len(kv)>=3 and ('bootdelay' in kv or 'bootcmd' in kv):
+                pseudo.append({'offset':start,'size':len(seg),'crc':'00000000','crc_calc':'00000000','valid':False,'vars':kv,'bootdelay':kv.get('bootdelay'),'score':1.0})
+        if pseudo:
+            pseudo.sort(key=lambda r:(-('bootdelay' in r['vars']), r['offset']))
+            return pseudo
+    except Exception:
+        pass
     return out
 
 def analyze_bootloader_env(env_blocks):
