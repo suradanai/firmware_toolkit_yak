@@ -1,14 +1,24 @@
 import sys
 import os
 import subprocess, threading, hashlib, shutil, tempfile, datetime, struct, time, json, binascii, gzip
+from tool_registry import (
+    choose_tool, get_candidates,
+    CAP_SQUASHFS_EXTRACT, CAP_SQUASHFS_PACK,
+    CAP_CRAMFS_EXTRACT, CAP_CRAMFS_PACK,
+    CAP_JFFS2_EXTRACT, CAP_JFFS2_PACK,
+    CAP_YAFFS2_EXTRACT, CAP_YAFFS2_PACK,
+    log_summary as tool_log_summary
+)
 
 # Qt imports (added / restored after patch issues)
 try:
     from PySide6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-        QTreeWidget, QTreeWidgetItem, QSplitter, QTextEdit, QTabWidget, QFileDialog,
-        QMessageBox, QInputDialog, QCheckBox, QSpinBox
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+    QTreeWidget, QTreeWidgetItem, QSplitter, QTextEdit, QTabWidget, QFileDialog,
+    QMessageBox, QInputDialog, QCheckBox, QSpinBox, QComboBox, QLineEdit, QDialogButtonBox,
+    QListWidget, QListWidgetItem, QStackedWidget, QSizePolicy, QProgressBar, QGroupBox
     )
+    from PySide6.QtWidgets import QDialog
     from PySide6.QtGui import QAction
     from PySide6.QtCore import Qt, QThread, Signal
 except Exception as _qt_e:
@@ -28,254 +38,297 @@ from core.logging_utils import configure_logging
 from passlib.hash import sha512_crypt
 import core.multisquash as multisquash
 
-# --- System library check (Linux: libxcb-cursor0 for Qt) ---
-def check_system_libs():
-    # Minimal check: ensure required Qt system libs likely present
-    try:
-        # Example check: try importing PySide6 Qt platform plugin dependencies
-        import importlib
-        importlib.import_module('PySide6')
-        return True
-    except Exception:
-        return False
-
-# --- Auto install dependencies if missing ---
-REQUIRED = [
-    ("PySide6", "PySide6>=6.4.0"),
-    ("passlib", "passlib>=1.7.4"),
-    ("jefferson", "jefferson>=0.4.0"),
-    ("yaml", "PyYAML>=6.0"),
-]
-missing = []
-for mod, pipname in REQUIRED:
-    try:
-        if mod == "yaml":
-            import yaml
-        else:
-            __import__(mod)
-    except ImportError:
-        missing.append(pipname)
-if missing:
-    print("\n[INFO] ติดตั้ง dependencies อัตโนมัติ:", ", ".join(missing))
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
-    except Exception as e:
-        print('[WARN] auto-install dependencies failed:', e)
-
-# Simple translation shim (identity) to avoid NameError if i18n system not loaded
-def _(key: str):
-    return key
+# ---- Temporary i18n & worker stubs (rebuild after corruption) ----
+def _(key: str) -> str:
+    mapping = {
+        'app_title': 'Firmware Toolkit',
+        'btn_open_fw': 'Open Firmware',
+        'btn_patch_boot': 'Boot Delay',
+        'btn_patch_serial': 'Serial Shell',
+        'btn_patch_network': 'Network'
+    }
+    return mapping.get(key, key)
 
 class FMKRunner(QThread):
-    """Generic background process runner to stream stdout into GUI log."""
     log = Signal(str)
-    finished = Signal(int)
     error = Signal(str)
-    def __init__(self, cmd, cwd=None, parent=None):
-        super().__init__(parent)
-        self.cmd = cmd
-        self.cwd = cwd
-    def run(self):  # type: ignore[override]
+    finished = Signal(int)
+    def __init__(self, cmd, cwd=None):
+        super().__init__(); self.cmd = cmd; self.cwd = cwd
+    def run(self):
+        import subprocess, shlex
         try:
-            p = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=self.cwd)
+            self.log.emit('[FMKRunner] start: ' + ' '.join(shlex.quote(c) for c in self.cmd))
+            p = subprocess.Popen(self.cmd, cwd=self.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             if p.stdout:
                 for line in iter(p.stdout.readline, ''):
-                    if not line:
-                        break
+                    if not line: break
                     self.log.emit(line.rstrip())
             p.wait()
-            self.finished.emit(p.returncode)
+            rc = p.returncode
+            if rc != 0:
+                self.error.emit(f'Command exited rc={rc}')
+            self.finished.emit(rc)
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit(f'Runner exception: {e}')
+            self.finished.emit(-1)
+
+class ApplyPipelineWorker:
+    def __init__(self, fw_path, suggestions, output_dir):
+        self._cancel=False
+    def start(self): pass
+    def request_cancel(self): self._cancel=True
 
 class MultiSquashWorker(QThread):
-    """Worker to execute multi-squash shrink & assembly pipeline without blocking GUI."""
     log = Signal(str)
     error = Signal(str)
-    finished_ok = Signal(str)  # emits output firmware path
-    def __init__(self, fw_path: str, out_dir: str, allow_destructive: bool=False, parent=None):
-        super().__init__(parent)
-        self.fw_path = fw_path
-        self.out_dir = out_dir
-        self.allow_destructive = allow_destructive
-    def run(self):  # type: ignore[override]
-        import core.multisquash as multisquash
+    finished_ok = Signal(str)
+    def __init__(self, fw_path, out_dir, allow_destructive):
+        super().__init__(); self.fw_path=fw_path; self.out_dir=out_dir; self.allow_destructive=allow_destructive
+    def run(self):
         try:
-            self.log.emit('[MSQ] detecting squashfs parts...')
+            self.log.emit('[MSQ] Detecting squashfs parts...')
             parts = multisquash.detect_squashfs(self.fw_path)
             if not parts:
-                raise RuntimeError('No squashfs parts detected')
-            tmp = tempfile.mkdtemp(prefix='msq-')
+                self.error.emit('No squashfs parts found'); return
+            # For now only operate on first part
+            part0 = parts[0]
+            self.log.emit(f'[MSQ] using part offset=0x{part0.offset:X} size={part0.size}')
+            import tempfile, os
+            tmpdir = tempfile.mkdtemp(prefix='msq_')
             try:
-                replaced_files = []
-                for idx, part in enumerate(parts):
-                    part_file = os.path.join(tmp, f'part{idx}.bin')
-                    multisquash.extract_part(self.fw_path, part, part_file)
-                    self.log.emit(f'[MSQ] extracted part#{idx} off={hex(part.offset)} size={part.size}')
-                    # attempt shrink
-                    try:
-                        unsq_dir = os.path.join(tmp, f'unsq{idx}')
-                        os.makedirs(unsq_dir, exist_ok=True)
-                        ok, err = extract_rootfs('squashfs', part_file, unsq_dir, lambda m: self.log.emit('[EXTRACT] '+m))
-                        if not ok:
-                            self.log.emit(f'[MSQ] skip shrink part#{idx} (extract fail: {err})')
-                            replaced_files.append(part_file); continue
-                        success, new_path, new_size = multisquash.shrink_pipeline(unsq_dir, part.size, allow_destructive=self.allow_destructive)
-                        if success and new_path:
-                            dest = os.path.join(tmp, f'shrunk{idx}.bin')
-                            shutil.copy2(new_path, dest)
-                            replaced_files.append(dest)
-                            self.log.emit(f'[MSQ] shrunk part#{idx} -> {new_size} bytes')
-                        else:
-                            self.log.emit(f'[MSQ] shrink failed/oversize part#{idx}; keeping original')
-                            replaced_files.append(part_file)
-                    except Exception as e:
-                        self.log.emit(f'[MSQ] error shrinking part#{idx}: {e}'); replaced_files.append(part_file)
-                out_fw = os.path.join(self.out_dir, os.path.splitext(os.path.basename(self.fw_path))[0] + '_patched.bin')
-                multisquash.assemble_parts(replaced_files, out_fw)
-                self.log.emit(f'[MSQ] assembled firmware -> {out_fw}')
-                self.finished_ok.emit(out_fw)
+                part_file = os.path.join(tmpdir,'part0.bin')
+                multisquash.extract_part(self.fw_path, part0, part_file)
+                self.log.emit('[MSQ] extracted part slice')
+                unsquash_dir = os.path.join(tmpdir,'unsquash'); os.makedirs(unsquash_dir, exist_ok=True)
+                # Use 'auto' so extract_rootfs can detect cramfs/jffs2/yaffs2 instead of forcing squashfs
+                ok, err = extract_rootfs('auto', part_file, unsquash_dir, self.log.emit)
+                if not ok:
+                    self.error.emit(f'extract failed: {err}'); return
+                # optional shrink pipeline
+                success, out_path, new_size = multisquash.shrink_pipeline(unsquash_dir, orig_limit=part0.size, allow_destructive=self.allow_destructive)
+                self.log.emit(f'[MSQ] shrink success={success} size={new_size}')
+                # Repack (simple mksquashfs) if shrink produced candidate within size
+                if success and out_path:
+                    with open(self.fw_path,'rb') as f: fw_data = bytearray(f.read())
+                    with open(out_path,'rb') as f: new_part = f.read()
+                    if len(new_part) <= part0.size:
+                        fw_data[part0.offset:part0.offset+len(new_part)] = new_part
+                        if len(new_part) < part0.size:
+                            fw_data[part0.offset+len(new_part):part0.offset+part0.size] = b'\x00'*(part0.size-len(new_part))
+                        out_fw = os.path.join(self.out_dir, os.path.basename(self.fw_path).replace('.bin','')+'_multisquash.bin')
+                        with open(out_fw,'wb') as f: f.write(fw_data)
+                        self.log.emit(f'[MSQ] wrote {out_fw}')
+                        self.finished_ok.emit(out_fw); return
+                    else:
+                        self.log.emit('[MSQ] new part larger than original (abort write)')
+                self.error.emit('shrink or repack failed')
             finally:
-                try: shutil.rmtree(tmp, ignore_errors=True)
-                except Exception: pass
+                shutil.rmtree(tmpdir, ignore_errors=True)
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit(f'MultiSquash error: {e}')
 
+class SuggestedPipelinePreviewDialog:
+    def __init__(self, parent, suggestions): self.suggestions = suggestions
+    def exec(self): return 0
 
-def get_filetype(fpath):
+def extract_rootfs(fs_type, rootfs_bin, unsquashfs_dir, log_func):
+    """Extract rootfs (auto-detect squashfs/cramfs/jffs2/yaffs2). Returns (ok, err)."""
     try:
-        return subprocess.check_output(["file", "-b", fpath], text=True).strip()
+        fs_type = (fs_type or '').strip().lower()
+        if not os.path.exists(rootfs_bin):
+            return False, 'rootfs image missing'
+        os.makedirs(unsquashfs_dir, exist_ok=True)
+        with open(rootfs_bin,'rb') as f: head = f.read(512)
+        def _has_magic(d, magic: bytes): return d.startswith(magic)
+        squash_magics = (b'hsqs', b'sqsh')
+        cramfs_magic_le = b'\x45\x3d\xcd\x28'; cramfs_magic_be = b'\x28\xcd\x3d\x45'
+        detected=None
+        if any(_has_magic(head,m) for m in squash_magics): detected='squashfs'
+        elif _has_magic(head, cramfs_magic_le) or _has_magic(head, cramfs_magic_be): detected='cramfs'
+        elif any(m in head[:256] for m in squash_magics): detected='squashfs'
+        if fs_type in ('auto','','unknown'):
+            if detected: fs_type = detected
+            else:
+                if head[:2]==b'\x85\x19' or head[0x100:0x102]==b'\x85\x19': fs_type='jffs2'
+                elif b'yaffs' in head.lower(): fs_type='yaffs2'
+        if fs_type in ('squash','sqsh'): fs_type='squashfs'
+        log_func(f"[ROOTFS] detect={detected or 'none'} final={fs_type}")
+        # --- SquashFS ---
+        if fs_type=='squashfs':
+            import tempfile, subprocess, shutil as _sh
+            candidates = get_candidates(CAP_SQUASHFS_EXTRACT)
+            if not candidates:
+                single = shutil.which('unsquashfs')
+                if not single: return False, 'unsquashfs tool not found'
+                class _Stub:
+                    pass
+                s = _Stub()
+                s.path = single
+                candidates = [s]
+            # heuristic reorder: system first then legacy lzma
+            try:
+                def _score(ti):
+                    p=getattr(ti,'path',''); sc=0
+                    if '/usr/' in p: sc-=50
+                    if 'lzma' in os.path.basename(p).lower(): sc-=20
+                    return sc
+                candidates=sorted(candidates,key=_score)
+            except Exception: pass
+            tmpdir=tempfile.mkdtemp(prefix='unsq_')
+            try:
+                success=False
+                for idx, ti in enumerate(candidates,1):
+                    tool=ti.path; dest=os.path.join(tmpdir,'squashfs-root')
+                    cmd=[tool,'-d',dest,rootfs_bin]
+                    log_func(f"[UNSQUASHFS] try {idx}: {tool}")
+                    p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+                    out=p.stdout or ''
+                    if p.returncode!=0 and ('unsupported' in out.lower() or 'unknown compression' in out.lower()):
+                        alt=[tool,'-no-progress','-d',dest,rootfs_bin]; log_func('[UNSQUASHFS] retry alt flags')
+                        p2=subprocess.run(alt,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+                        if p2.returncode==0: p=p2; out=p.stdout or ''
+                    fatal=False
+                    for line in (out.splitlines()[:400]):
+                        if 'fatal' in line.lower(): fatal=True
+                        if any(k in line.lower() for k in ('fatal','error')): log_func('[UNSQUASHFS] '+line)
+                    if p.returncode==0 and not fatal:
+                        success=True; break
+                if not success:
+                    # heuristic fallback to alternate fs type detection
+                    if _has_magic(head, cramfs_magic_le) or _has_magic(head, cramfs_magic_be): fs_type='cramfs'
+                    elif b'\x85\x19' in head[:4096]: fs_type='jffs2'
+                    elif b'yaffs' in head.lower(): fs_type='yaffs2'
+                    else: return False,'unsquashfs failed (all versions)'
+                if fs_type=='squashfs':
+                    root_dir=os.path.join(tmpdir,'squashfs-root')
+                    if not os.path.isdir(root_dir): return False,'squashfs-root missing after extraction'
+                    for name in os.listdir(root_dir):
+                        src=os.path.join(root_dir,name); dst=os.path.join(unsquashfs_dir,name)
+                        if os.path.exists(dst):
+                            try:
+                                if os.path.isdir(dst) and os.path.isdir(src): pass
+                                else: os.remove(dst)
+                            except Exception: pass
+                        try: _sh.move(src,dst)
+                        except Exception as e: log_func(f"[UNSQUASHFS] move warn: {e}")
+                    return True,''
+            finally:
+                shutil.rmtree(tmpdir,ignore_errors=True)
+        # --- CramFS ---
+        if fs_type=='cramfs':
+            cramfsck=shutil.which('cramfsck') or shutil.which('uncramfs')
+            if not cramfsck: return False,'cramfs extraction tool (cramfsck/uncramfs) not found'
+            import subprocess as _sub
+            if os.path.basename(cramfsck)=='cramfsck': cmd=[cramfsck,'-x',unsquashfs_dir,rootfs_bin]
+            else: cmd=[cramfsck,rootfs_bin,unsquashfs_dir]
+            p=_sub.run(cmd,stdout=_sub.PIPE,stderr=_sub.STDOUT,text=True)
+            log_func(f"[CRAMFS] rc={p.returncode}")
+            if p.stdout:
+                for line in p.stdout.splitlines()[:200]:
+                    if 'error' in line.lower(): log_func('[CRAMFS] '+line)
+            if p.returncode!=0: return False,'cramfs extraction failed'
+            return True,''
+        # --- JFFS2 ---
+        if fs_type in ('jffs2','jffs'):
+            tool=choose_tool(CAP_JFFS2_EXTRACT)
+            exe=tool.path if tool else shutil.which('unjffs2')
+            if not exe: return False,'unjffs2 tool not found'
+            import tempfile as _tf, subprocess as _sub
+            tmp=_tf.mkdtemp(prefix='jffs2_')
+            try:
+                cmd=[exe,rootfs_bin,tmp]; log_func('[JFFS2] '+' '.join(cmd))
+                p=_sub.run(cmd,stdout=_sub.PIPE,stderr=_sub.STDOUT,text=True,timeout=300)
+                if p.returncode!=0: log_func('[JFFS2] extract failed rc='+str(p.returncode)); return False,'unjffs2 failed'
+                for n in os.listdir(tmp):
+                    s=os.path.join(tmp,n); d=os.path.join(unsquashfs_dir,n)
+                    if os.path.isdir(s): shutil.copytree(s,d,dirs_exist_ok=True)
+                    else: shutil.copy2(s,d)
+                return True,''
+            finally:
+                shutil.rmtree(tmp,ignore_errors=True)
+        # --- YAFFS2 ---
+        if fs_type in ('yaffs2','yaffs'):
+            tool=choose_tool(CAP_YAFFS2_EXTRACT)
+            exe=tool.path if tool else shutil.which('unyaffs2')
+            if not exe: return False,'unyaffs2 tool not found'
+            import tempfile as _tf, subprocess as _sub
+            tmp=_tf.mkdtemp(prefix='yaffs2_')
+            try:
+                cmd=[exe,rootfs_bin,tmp]; log_func('[YAFFS2] '+' '.join(cmd))
+                p=_sub.run(cmd,stdout=_sub.PIPE,stderr=_sub.STDOUT,text=True,timeout=300)
+                if p.returncode!=0: log_func('[YAFFS2] extract failed rc='+str(p.returncode)); return False,'unyaffs2 failed'
+                for n in os.listdir(tmp):
+                    s=os.path.join(tmp,n); d=os.path.join(unsquashfs_dir,n)
+                    if os.path.isdir(s): shutil.copytree(s,d,dirs_exist_ok=True)
+                    else: shutil.copy2(s,d)
+                return True,''
+            finally:
+                shutil.rmtree(tmp,ignore_errors=True)
+        return False,f'unsupported fs type: {fs_type}'
     except Exception as e:
-        return f"file error: {e}"
-
-
-
-    
-
-def list_files_in_rootfs(rootfs_dir):
-    filelist = []
-    for root, dirs, files in os.walk(rootfs_dir):
-        for fname in files:
-            fpath = os.path.join(root, fname)
-            rel = os.path.relpath(fpath, rootfs_dir)
-            ftype = get_filetype(fpath)
-            filelist.append((rel, ftype))
-    return filelist
-
-def _normalize_fs(fs_type: str) -> str:
-    if not fs_type:
-        return fs_type
-    fs = fs_type.lower()
-    # Map common substrings / variants
-    if 'squash' in fs:
-        return 'squashfs'
-    if 'cramfs' in fs:
-        return 'cramfs'
-    if 'jffs2' in fs or fs == 'jffs':
-        return 'jffs2'
-    if fs.startswith('ubi') or 'ubifs' in fs:
-        return 'ubi'
-    return fs_type  # fallback original
-
-def extract_rootfs(fs_type, rootfs_bin, extract_dir, log_func):
-    fs_type = _normalize_fs(fs_type)
-    if fs_type == "squashfs":
-        # Primary tool unsquashfs; fallback to sasquatch (unmodified squashfs) if available; then binwalk
-        unsq = shutil.which("unsquashfs")
-        sasq = shutil.which("sasquatch")  # patched unsquashfs for LZMA edge cases
-        if unsq:
-            try:
-                subprocess.check_output([unsq, "-d", extract_dir, rootfs_bin], stderr=subprocess.STDOUT, timeout=45)
-                return True, ""
-            except Exception as e:
-                log_func(f"unsquashfs error: {e}; จะลอง sasquatch/ binwalk fallback")
-        if sasq:
-            try:
-                subprocess.check_output([sasq, "-d", extract_dir, rootfs_bin], stderr=subprocess.STDOUT, timeout=60)
-                return True, ""
-            except Exception as e:
-                log_func(f"sasquatch error: {e}; จะลอง binwalk fallback")
-    elif fs_type == "cramfs":
-        try:
-            subprocess.check_output(["cramfsck", "-x", extract_dir, rootfs_bin],
-                                   stderr=subprocess.STDOUT, timeout=30)
-            return True, ""
-        except Exception as e:
-            log_func(f"cramfsck error: {e}; จะลอง binwalk fallback")
-    elif fs_type in ("jffs2", "jffs"):
-        jefferson = shutil.which("jefferson")
-        if jefferson:
-            try:
-                subprocess.check_output([jefferson, rootfs_bin, extract_dir],
-                                       stderr=subprocess.STDOUT, timeout=60)
-                return True, ""
-            except Exception as e:
-                log_func(f"jefferson error: {e}; จะลอง binwalk fallback")
-        else:
-            log_func("jefferson tool not found for jffs2; จะลอง binwalk fallback")
-    elif fs_type == "ubi":
-        ubireader = shutil.which("ubireader_extract_files")
-        if ubireader:
-            try:
-                subprocess.check_output([
-                    "ubireader_extract_files", "-o", extract_dir, rootfs_bin
-                ], stderr=subprocess.STDOUT, timeout=120)
-                return True, ""
-            except Exception as e:
-                log_func(f"ubireader error: {e}; จะลอง binwalk fallback")
-        else:
-            log_func("ubireader_extract_files tool not found for ubi; จะลอง binwalk fallback")
-    else:
-        log_func(f"ไม่รองรับการแตก {fs_type}; จะลอง binwalk fallback")
-
-    # ---- Binwalk fallback ----
-    bw = preferred_tool('binwalk') or shutil.which("binwalk")
-    if not bw:
-        return False, "ไม่สำเร็จและไม่มี binwalk fallback (ติดตั้งด้วย: sudo apt install binwalk หรือ pip install binwalk --break-system-packages)"
+        return False,str(e)
+# --- System library check (Linux: libxcb-cursor0 for Qt) ---
+def check_system_libs():
     try:
-        # Run extraction (-e) into a temp dir then move best candidate into extract_dir
-        tmp_bw = tempfile.mkdtemp(prefix="bw-extract-")
+        # ตัวอย่าง: เช็คว่ามีไฟล์ libxcb-cursor หรือไม่ (ไม่ต้องเข้มงวดมาก)
+        # หากไม่มี ก็แค่บันทึก warning (ที่อื่นจะพยายาม fallback เอง)
+        return True
+    except Exception:
+        return True  # ไม่ให้บล็อคการทำงานหลัก
+
+def find_tool(name: str):
+    """Locate external helper binary.
+    Search order:
+      1) tools_bin/ (repo vendor)
+      2) tools_bin/bin/ (common layout)
+      3) any extra dirs from FMK_TOOL_DIRS env (colon separated)
+      4) PATH (shutil.which)
+    Accept either exact match or executable starting with name (e.g. name+'.py').
+    """
+    candidates = []
+    seen = set()
+    def _add(path):
+        if path and path not in seen and os.path.isdir(path):
+            seen.add(path); candidates.append(path)
+    try:
+        here = os.path.dirname(__file__)
+        tb = os.path.join(here,'tools_bin')
+        _add(tb)
+        _add(os.path.join(tb,'bin'))
+        extra = os.environ.get('FMK_TOOL_DIRS','')
+        for d in extra.split(':'):
+            if d: _add(d)
+    except Exception:
+        pass
+    for d in candidates:
         try:
-            subprocess.check_output([bw, "-e", rootfs_bin, "--directory", tmp_bw], stderr=subprocess.STDOUT, timeout=180)
-        except subprocess.CalledProcessError as e:
-            # binwalk returns non‑zero sometimes even if it extracted; continue
-            log_func(f"binwalk non-zero exit: {e}")
-        # Find candidate dirs (common names)
-        candidates = []
-        for r, dirs, files in os.walk(tmp_bw):
-            for d in dirs:
-                name = d.lower()
-                if any(x in name for x in ["squashfs-root", "rootfs", "fs_", "_extracted"]):
-                    candidates.append(os.path.join(r, d))
-        if not candidates:
-            # maybe binwalk created _rootfs.bin etc; as last resort copy everything
-            for d in os.listdir(tmp_bw):
-                p = os.path.join(tmp_bw, d)
-                if os.path.isdir(p):
-                    candidates.append(p)
-        if not candidates:
-            shutil.rmtree(tmp_bw, ignore_errors=True)
-            return False, "binwalk fallback ไม่พบโฟลเดอร์ rootfs"
-        # Pick largest candidate
-        def dir_size(p):
-            total=0
-            for rp, _, fs in os.walk(p):
-                for f in fs:
-                    try: total += os.path.getsize(os.path.join(rp,f))
-                    except: pass
-            return total
-        best = max(candidates, key=dir_size)
-        shutil.copytree(best, extract_dir, dirs_exist_ok=True)
-        shutil.rmtree(tmp_bw, ignore_errors=True)
-        log_func(f"✅ binwalk fallback extract สำเร็จ (เลือก {os.path.basename(best)})")
-        return True, ""
+            for fn in os.listdir(d):
+                if fn == name or fn.startswith(name+'.') or fn.startswith(name+'-'):
+                    fp = os.path.join(d, fn)
+                    if os.path.isfile(fp) and os.access(fp, os.X_OK):
+                        return fp
+        except Exception:
+            continue
+    return shutil.which(name)
+
+def log_vendor_tools(log_func):
+    try:
+        tools = ['unsquashfs','mksquashfs','binwalk','cramfsck','mkcramfs','mkfs.jffs2']
+        for t in tools:
+            p = find_tool(t)
+            log_func(f"[TOOLS] {t}: {p or 'NOT FOUND'}")
     except Exception as e:
-        return False, f"binwalk fallback ล้มเหลว: {e}"
+        try: log_func(f'[TOOLS] vendor tool scan error: {e}')
+        except Exception: pass
 
 def repack_rootfs(fs_type, unsquashfs_dir, rootfs_bin_out, log_func, force_comp=None):
+    def _normalize_fs(t):
+        return (t or '').strip().lower()
     fs_type = _normalize_fs(fs_type)
     if fs_type == "squashfs":
-        mksquashfs = shutil.which("mksquashfs")
+        ti = choose_tool(CAP_SQUASHFS_PACK)
+        mksquashfs = ti.path if ti else find_tool("mksquashfs")
         if not mksquashfs:
             return False, "mksquashfs tool not found"
 
@@ -290,7 +343,7 @@ def repack_rootfs(fs_type, unsquashfs_dir, rootfs_bin_out, log_func, force_comp=
                 if fname.endswith(".bin") or fname.endswith(".img") or fname.endswith(".squashfs"):
                     orig_path = os.path.join(parent_dir, fname)
                     try:
-                        out = subprocess.check_output(["unsquashfs", "-s", orig_path], text=True, stderr=subprocess.DEVNULL)
+                        out = subprocess.check_output([find_tool("unsquashfs") or "unsquashfs", "-s", orig_path], text=True, stderr=subprocess.DEVNULL)
                         orig_info = out
                         break
                     except Exception:
@@ -328,50 +381,57 @@ def repack_rootfs(fs_type, unsquashfs_dir, rootfs_bin_out, log_func, force_comp=
             return False, f"mksquashfs error: {e}"
 
     elif fs_type == "cramfs":
-        mkcramfs = shutil.which("mkcramfs")
+        ti = choose_tool(CAP_CRAMFS_PACK)
+        mkcramfs = ti.path if ti else shutil.which("mkcramfs")
         if not mkcramfs:
             return False, "mkcramfs tool not found"
         try:
-            subprocess.check_output(
-                [mkcramfs, unsquashfs_dir, rootfs_bin_out],
-                stderr=subprocess.STDOUT, timeout=60
-            )
+            subprocess.check_output([mkcramfs, unsquashfs_dir, rootfs_bin_out], stderr=subprocess.STDOUT, timeout=90)
             return True, ""
         except Exception as e:
             return False, f"mkcramfs error: {e}"
 
     elif fs_type in ("jffs2", "jffs"):
-        mkfsjffs2 = shutil.which("mkfs.jffs2")
+        ti = choose_tool(CAP_JFFS2_PACK)
+        mkfsjffs2 = ti.path if ti else shutil.which("mkfs.jffs2")
         if not mkfsjffs2:
             return False, "mkfs.jffs2 tool not found"
         try:
-            subprocess.check_output(
-                [mkfsjffs2, "-d", unsquashfs_dir, "-o", rootfs_bin_out],
-                stderr=subprocess.STDOUT, timeout=120
-            )
+            # default options; could add -l / -e later (eraseblock size)
+            subprocess.check_output([mkfsjffs2, "-d", unsquashfs_dir, "-o", rootfs_bin_out], stderr=subprocess.STDOUT, timeout=180)
             return True, ""
         except Exception as e:
             return False, f"mkfs.jffs2 error: {e}"
+
+    elif fs_type in ("yaffs2", "yaffs"):
+        ti = choose_tool(CAP_YAFFS2_PACK)
+        mkyaffs2 = ti.path if ti else shutil.which("mkyaffs2")
+        if not mkyaffs2:
+            return False, "mkyaffs2 tool not found"
+        try:
+            subprocess.check_output([mkyaffs2, unsquashfs_dir, rootfs_bin_out], stderr=subprocess.STDOUT, timeout=180)
+            return True, ""
+        except Exception as e:
+            return False, f"mkyaffs2 error: {e}"
 
     else:
         return False, f"ไม่รองรับการ pack {fs_type}"
 
 def patch_boot_delay(fw_path, rootfs_part, new_delay, out_path, log_func):
-    # Patch at offset 0x100 (example, may vary by firmware)
+    """Auto patch boot delay at known candidate offsets (currently 0x100)."""
     try:
-        with open(fw_path, "rb") as f:
-            data = bytearray(f.read())
+        with open(fw_path,'rb') as f: data = bytearray(f.read())
         if len(data) <= 0x100:
-            log_func("❌ ไฟล์เล็กเกินไป ไม่มี offset 0x100")
-            return False, "file too small"
-        data[0x100] = new_delay & 0xFF
-        with open(out_path, "wb") as f:
-            f.write(data)
-        log_func(f"✅ Patch boot delay ที่ offset 0x100 เป็น {new_delay} วินาที สำเร็จ: {out_path}")
-        return True, ""
+            log_func('❌ ไฟล์เล็กเกินไป ไม่มี offset 0x100'); return False,'file too small'
+        candidates = [0x100]
+        for off in candidates:
+            if off < len(data): data[off] = new_delay & 0xFF
+        with open(out_path,'wb') as f: f.write(data)
+        log_func(f'✅ ปรับ boot delay={new_delay}s {len(candidates)} จุด -> {out_path}')
+        return True,''
     except Exception as e:
-        log_func(f"❌ Patch boot delay ผิดพลาด: {e}")
-        return False, str(e)
+        log_func(f'❌ Patch boot delay ผิดพลาด: {e}')
+        return False,str(e)
 
 def read_boot_delay_byte(path: str):
     try:
@@ -509,6 +569,167 @@ def scan_uboot_env(fw_path, max_search=0x200000, env_sizes=(0x1000,0x2000,0x4000
     results.sort(key=lambda r:(-r.get('score',0), r['offset']))
     return results
 
+# ---- Advanced U-Boot env scanner v2 (extended heuristics) ----
+def scan_uboot_env_v2(
+    fw_path: str,
+    max_search: int = 0x400000,
+    env_sizes = (0x800,0x1000,0x1800,0x2000,0x3000,0x4000,0x6000,0x8000,0x10000,0x20000,0x40000),
+    deep: bool = False,
+    step: int | None = None,
+    keep_crc_mismatch: bool = True,
+    compiled_scan: bool = True,
+    verbose: bool = False,
+    max_candidates: int = 2000,
+):
+    """Improved scan for U-Boot environment blocks.
+
+    Features:
+      - Smaller step (default 0x100 or 0x200) to catch misaligned blocks.
+      - Both endian CRC trials (little + big) to detect big-endian images.
+      - Wider env_sizes list.
+      - Accept candidate with sufficiently many key=value (>=3) even if CRC mismatch (flag 'crc_ok'=False).
+      - Detect redundant pair sequences (two blocks of same size back-to-back) and mark 'redundant_pair'.
+      - Optional heuristic for compiled default env (string region containing bootdelay=..., bootcmd=... before double null) -> type='compiled'.
+      - Score weighting: bootdelay/bootcmd presence, number of vars, CRC validity.
+    Returns list of dict candidates sorted by score desc.
+    """
+    import struct, binascii
+    candidates = []
+    try:
+        fsize = os.path.getsize(fw_path)
+        limit = fsize if deep else min(fsize, max_search)
+        with open(fw_path,'rb') as f: blob = f.read(limit)
+    except Exception:
+        return []
+    if step is None:
+        step = 0x100 if deep else 0x200
+    anchors = (b'bootdelay=', b'bootcmd=', b'bootargs=')
+    def score_vars(kv):
+        s = 0
+        if 'bootdelay' in kv: s += 5
+        if 'bootcmd' in kv: s += 3
+        if 'bootargs' in kv: s += 2
+        s += min(len(kv),80)/12.0
+        return s
+    # Scan blocks
+    for off in range(0, len(blob), step):
+        if len(candidates) >= max_candidates: break
+        for env_size in env_sizes:
+            end = off + env_size
+            if end > len(blob) or env_size < 16: continue
+            block = blob[off:end]
+            data = block[4:]
+            # quick reject: must have '=' and terminating \x00\x00 within region (allow mismatch CRC)
+            if b'=' not in data: continue
+            term = data.find(b'\x00\x00')
+            if term == -1 or term < 4: continue
+            env_region = data[:term+1]
+            # parse pairs
+            raw_vars = env_region.split(b'\x00')
+            kv={}; valid_pairs=0
+            for raw in raw_vars:
+                if not raw or b'=' not in raw: continue
+                k,v = raw.split(b'=',1)
+                if len(k)==0 or len(k)>64: continue
+                try:
+                    k_dec=k.decode(); v_dec=v.decode(errors='ignore')
+                except Exception:
+                    continue
+                if any(ord(c)<32 or ord(c)>126 for c in k_dec):
+                    continue
+                kv[k_dec]=v_dec; valid_pairs+=1
+            if valid_pairs < 3:  # too sparse
+                continue
+            # CRC checks
+            crc_le = binascii.crc32(env_region) & 0xffffffff
+            crc_be = crc_le  # compute once (data same) but we compare to stored bytes both endian
+            stored_le = struct.unpack('<I', block[:4])[0]
+            stored_be = struct.unpack('>I', block[:4])[0]
+            crc_ok = (stored_le == crc_le) or (stored_be == crc_be)
+            if not crc_ok and not keep_crc_mismatch:
+                continue
+            s = score_vars(kv)
+            if crc_ok: s += 2
+            cand = {
+                'offset': off,
+                'size': env_size,
+                'vars': kv,
+                'bootdelay': kv.get('bootdelay'),
+                'score': s,
+                'crc_ok': crc_ok,
+                'stored_crc_le': f"{stored_le:08x}",
+                'calc_crc': f"{crc_le:08x}",
+                'endian_match': 'le' if stored_le==crc_le else ('be' if stored_be==crc_be else 'none'),
+                'type':'block'
+            }
+            candidates.append(cand)
+    # Redundant pair marking
+    by_size = {}
+    for c in candidates:
+        by_size.setdefault(c['size'], []).append(c)
+    for size, lst in by_size.items():
+        lst.sort(key=lambda x:x['offset'])
+        for a,b in zip(lst, lst[1:]):
+            if b['offset'] == a['offset'] + size:
+                a['redundant_pair'] = True; b['redundant_pair'] = True
+    # Compiled env heuristic
+    if compiled_scan:
+        try:
+            import re
+            for m in re.finditer(b'bootdelay=\d+', blob):
+                start = m.start()
+                # extend forward collecting key=value\0 strings
+                p = start
+                limit_forward = min(len(blob), start + 0x8000)
+                kv_bytes = b''; kv_parsed = {}
+                while p < limit_forward:
+                    end = blob.find(b'\x00', p)
+                    if end == -1: break
+                    seg = blob[p:end]
+                    p = end + 1
+                    if seg == b'':
+                        break
+                    if b'=' not in seg:
+                        # if non key=value encountered early, abort
+                        if len(kv_parsed) < 3: break
+                        else: continue
+                    k,v = seg.split(b'=',1)
+                    try:
+                        ks = k.decode(); vs = v.decode(errors='ignore')
+                    except Exception:
+                        continue
+                    if any(ord(c)<32 or ord(c)>126 for c in ks):
+                        break
+                    kv_parsed[ks]=vs
+                    kv_bytes += seg + b'\x00'
+                    if len(kv_parsed) > 64: break
+                if len(kv_parsed) >=3:
+                    s = score_vars(kv_parsed) + 1  # compiled bonus
+                    candidates.append({
+                        'offset': start,
+                        'size': len(kv_bytes),
+                        'vars': kv_parsed,
+                        'bootdelay': kv_parsed.get('bootdelay'),
+                        'score': s,
+                        'crc_ok': False,
+                        'endian_match':'n/a',
+                        'type':'compiled'
+                    })
+        except Exception:
+            pass
+    # Deduplicate by (offset,size,type)
+    uniq = {}
+    for c in candidates:
+        key = (c['offset'], c['size'], c.get('type','block'))
+        if key not in uniq or c['score'] > uniq[key]['score']:
+            uniq[key] = c
+    out = list(uniq.values())
+    out.sort(key=lambda r: (-r.get('score',0), r['offset']))
+    if verbose:
+        for c in out[:15]:
+            print(f"[V2] off=0x{c['offset']:X} size=0x{c['size']:X} type={c.get('type')} vars={len(c['vars'])} score={c['score']:.2f} crc_ok={c['crc_ok']} bootdelay={c.get('bootdelay')}")
+    return out
+
 def analyze_bootloader_env(env_blocks):
     """Produce human/AI style findings & suggestions from scanned U-Boot env blocks.
     Returns (findings, suggestions)
@@ -568,6 +789,9 @@ def analyze_bootloader_env(env_blocks):
 
 def patch_uboot_env_bootdelay(src_fw, dst_fw, new_val, log_func=lambda m:None):
     envs=scan_uboot_env(src_fw)
+    if not envs:  # fallback to v2
+        log_func('[UBOOT] v1 scan no result, trying v2...')
+        envs = scan_uboot_env_v2(src_fw, deep=True)
     if not envs:
         log_func('[UBOOT] ไม่พบ environment สำหรับแก้ไข')
         return False
@@ -638,6 +862,9 @@ def patch_uboot_env_bootdelay_all(src_fw, dst_fw, new_val, log_func=lambda m:Non
         # combined scan normal+deep (deep will include normal again but dedup by offset)
         envs = scan_uboot_env(src_fw)
         deep_envs = scan_uboot_env(src_fw, deep=True)
+        if not envs and not deep_envs:
+            log_func('[UBOOT] v1 scan empty, using v2 extended scan')
+            deep_envs = scan_uboot_env_v2(src_fw, deep=True)
         env_by_off={}
         for e in envs+deep_envs:
             env_by_off[e['offset']]=e
@@ -789,7 +1016,7 @@ def patch_uboot_env_vars(src_fw, dst_fw, target_offset, target_size, updates: di
     except Exception as e:
         log_func(f"[UBOOT] error: {e}"); return False, str(e)
 
-def patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func):
+def patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func, forced_port=None):
     # เพิ่ม getty สำหรับพอร์ตอนุกรมที่ตรวจพบ (auto-detect)
     tmpdir = tempfile.mkdtemp(prefix="patch-serial-")
     log_func(f"[TEMP] serial patch workspace: {tmpdir}")
@@ -809,7 +1036,11 @@ def patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func):
             log_func(f"❌ แตก rootfs ไม่สำเร็จ: {err}")
             return False, err
         # detect preferred serial port
-        serial_port = auto_detect_tty_port_from_context(fw_path, rootfs_part, unsquashfs_dir, log_func)
+        if forced_port:
+            serial_port = forced_port
+            log_func(f"[SERIAL] using user-selected port {serial_port}")
+        else:
+            serial_port = auto_detect_tty_port_from_context(fw_path, rootfs_part, unsquashfs_dir, log_func)
         inittab_path = os.path.join(unsquashfs_dir, "etc", "inittab")
         if os.path.exists(inittab_path):
             # avoid duplicate entries
@@ -937,20 +1168,13 @@ def patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func):
             if not success:
                 log_func('[AI] พยายามใช้การบีบอัดที่แรงขึ้น: xz')
                 ok, err = repack_rootfs(rootfs_part['fs'], unsquashfs_dir, new_rootfs_bin, log_func, force_comp='xz')
-                if ok:
-                    new_size = os.path.getsize(new_rootfs_bin)
-                    log_func(f"[AI] หลังใช้ xz ขนาด rootfs: {new_size} bytes")
-                    if new_size <= rootfs_part['size']:
-                        success = True
-                else:
-                    log_func(f"[AI] repack ด้วย xz ล้มเหลว: {err}")
+                # (no UI worker here — this helper runs outside the GUI context)
 
-            if not success:
-                log_func("❌ พยายามลดขนาดอัตโนมัติทั้งหมดแล้วแต่ยังไม่พอ -> แสดงไฟล์แนะนำเพื่อลดด้วยมือ")
+                # diagnostic: list largest files in the unsquashfs_dir to help user
                 file_sizes = []
-                for dp, dn, fn in os.walk(unsquashfs_dir):
-                    for f in fn:
-                        fpath = os.path.join(dp, f)
+                for root, _, files in os.walk(unsquashfs_dir):
+                    for fname in files:
+                        fpath = os.path.join(root, fname)
                         try:
                             sz = os.path.getsize(fpath)
                             file_sizes.append((sz, os.path.relpath(fpath, unsquashfs_dir)))
@@ -1117,7 +1341,7 @@ def patch_root_password(fw_path, rootfs_part, password, out_path, log_func):
 def core_patch_boot_delay(fw_path, rootfs_part, new_delay, out_path, log_func):
     return patch_boot_delay(fw_path, rootfs_part, new_delay, out_path, log_func)
 
-def core_patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func):
+def core_patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func, forced_port=None):
     if rootfs_part is None:
         try:
             parts = multisquash.detect_squashfs(fw_path)
@@ -1127,7 +1351,7 @@ def core_patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func):
             pass
     if rootfs_part is None:
         return False, 'no rootfs part'
-    return patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func)
+    return patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func, forced_port=forced_port)
 
 def core_patch_rootfs_network(fw_path, rootfs_part, out_path, log_func):
     if rootfs_part is None:
@@ -1187,6 +1411,9 @@ def deep_scan_file(path: str):
         return None
 
 class MainWindow(QMainWindow):
+    # signal used for thread -> main-thread logging
+    thread_log = Signal(str)
+
     def __init__(self):
         # runtime health-check: write a persistent small log entry to help diagnose
         try:
@@ -1198,12 +1425,48 @@ class MainWindow(QMainWindow):
             os.makedirs(health_dir, exist_ok=True)
             health_file = os.path.join(health_dir, 'health.log')
             with open(health_file, 'a') as hf:
-                hf.write(f"{datetime.datetime.utcnow().isoformat()}Z pid={os.getpid()} python={sys.executable} argv={sys.argv} DISPLAY={os.environ.get('DISPLAY')}\n")
+                hf.write(f"{datetime.datetime.now(datetime.UTC).isoformat()} pid={os.getpid()} python={sys.executable} argv={sys.argv} DISPLAY={os.environ.get('DISPLAY')}\n")
         except Exception:
             pass
         super().__init__()
+        # connect thread log signal to UI log slot to ensure UI updates run on main thread
+        try:
+            self.thread_log.connect(self.log)
+        except Exception:
+            pass
         self._bg_threads = []  # keep QThreads alive
         self.setWindowTitle(_('app_title'))
+
+        # ฟังก์ชัน helper สำหรับล็อก 2 ภาษา (เรียกใช้ภายหลังเพื่อให้ code อ่านง่าย)
+        def _init_log_helpers():
+            try:
+                self._th_marker = True  # flag เผื่ออนาคต
+            except Exception:
+                pass
+        _init_log_helpers()
+
+        # Paths / state (ต้องมาก่อนเมนู/Widget อื่น)
+        self.original_fw_path = None
+        self.patched_fw_path = None
+        self.fw_path = None
+        self.output_dir = os.path.abspath('output'); os.makedirs(self.output_dir, exist_ok=True)
+        self.logs_dir = os.path.abspath('logs'); os.makedirs(self.logs_dir, exist_ok=True)
+
+        # New automatic dependency prepare (first launch)
+        self.deps_flag = os.path.expanduser('~/.local/share/firmware_toolkit/deps_installed')
+        try:
+            os.makedirs(os.path.dirname(self.deps_flag), exist_ok=True)
+        except Exception:
+            pass
+        if not os.path.exists(self.deps_flag):
+            import sys
+            if os.environ.get("QT_QPA_PLATFORM") == "offscreen" or not sys.stdin.isatty():
+                self.thread_log.emit('[SETUP] Headless or no TTY: skipping FMK dependency install prompt')
+            else:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(1000, self._prompt_install_fmk_deps)
+        else:
+            self.thread_log.emit('[SETUP] Dependencies already installed (flag present)')
 
         # --- Menus ---
         menubar = self.menuBar()
@@ -1213,53 +1476,242 @@ class MainWindow(QMainWindow):
         for txt, act in [(_('btn_patch_boot'),'boot_delay'),(_('btn_patch_serial'),'serial'),(_('btn_patch_network'),'network')]:
             a = QAction(txt, self); a.triggered.connect(lambda _=False, ac=act: self._run_quick_patch(ac)); tools_menu.addAction(a)
         tools_menu.addSeparator()
+
         for txt, slot in [
+            ('Boot Delay (Popup Auto)', self.prompt_and_patch_boot_delay),
             ('Selective Patch...', self.open_selective_patch_dialog),
             ('RootFS Editor', self.edit_rootfs_file),
-            ('Custom Script', self.run_custom_script),
             ('U-Boot Env Editor', self.open_uboot_env_editor_dialog),
+            ('Custom Script', self.run_custom_script),
             ('Check Hash / Signature', self.check_hash_signature),
-            ('Export Patch Profile', self.export_patch_profile),
-            ('Import Patch Profile', self.import_patch_profile),
-        ]:
+            ('Tool Chains Summary', self._show_tool_chains),
+            ('Binwalk Self-Test', self._binwalk_self_test),
+            ]:
             a = QAction(txt, self); a.triggered.connect(slot); tools_menu.addAction(a)
-        fmk_menu = menubar.addMenu('FMK')
-        for txt, slot in [('Extract (FMK)', self.fmk_extract_wrapper), ('Build (FMK)', self.fmk_build_wrapper)]:
-            a = QAction(txt, self); a.triggered.connect(slot); fmk_menu.addAction(a)
 
-        # Paths / state
-        self.original_fw_path = None; self.patched_fw_path = None; self.fw_path = None
-        self.output_dir = os.path.abspath('output'); os.makedirs(self.output_dir, exist_ok=True)
-        self.logs_dir = os.path.abspath('logs'); os.makedirs(self.logs_dir, exist_ok=True)
+        # Add Install FMK Dependencies action (will auto-hide if nothing missing)
+        self.act_install_deps = QAction('Install FMK Dependencies', self)
+        self.act_install_deps.triggered.connect(self.install_fmk_deps)
+        tools_menu.addAction(self.act_install_deps)
+        try: self._update_install_deps_visibility()
+        except Exception: pass
+        # สร้าง UI หลัก
+        try:
+            self.build_ui()
+        except Exception as e:
+            try: self.log(f'[INIT] build_ui error: {e}')
+            except: pass
+        # แสดงสถานะเครื่องมือ vendor (tools_bin) ทันที
+        try: log_vendor_tools(self.thread_log.emit)
+        except Exception: pass
+        # ลงทะเบียนเมนู vendor
+        try: self._register_vendor_tool_actions()
+        except Exception as e:
+            try: self.log(f'[TOOLS] ผูกเมนู vendor ล้มเหลว: {e}')
+            except: pass
+        # แสดง summary chain ของเครื่องมือ (สำหรับ debug/fallback)
+        try: tool_log_summary(self.thread_log.emit)
+        except Exception: pass
 
-        # Sidebar + pages
-        sidebar = QTreeWidget(); sidebar.setHeaderHidden(True); sidebar.setIndentation(0); sidebar.setFixedWidth(220)
-        from PySide6.QtWidgets import QStackedWidget
+        # (ใช้ build_ui สำหรับสร้างหน้าและเมนูทั้งหมดแล้ว ไม่ต้องสร้างซ้ำที่นี่)
+
+    def _prompt_install_fmk_deps(self):
+        ans = QMessageBox.question(self, 'FMK dependencies',
+            'ต้องการติดตั้ง FMK dependencies (sudo) ตอนนี้หรือไม่?\n\n'
+            'จำเป็นสำหรับการใช้งานฟีเจอร์หลักของโปรแกรม',
+            QMessageBox.Yes | QMessageBox.No)
+        if ans == QMessageBox.Yes:
+            self.install_fmk_deps(automatic=True)
+
+    def _update_install_deps_visibility(self):
+        """Hide Install FMK Dependencies menu if all required tool capabilities and key packages exist."""
+        try:
+            from tool_registry import (
+                get_candidates,
+                CAP_SQUASHFS_EXTRACT, CAP_SQUASHFS_PACK,
+                CAP_CRAMFS_EXTRACT, CAP_CRAMFS_PACK,
+                CAP_JFFS2_PACK, CAP_YAFFS2_PACK
+            )
+            import shutil, subprocess
+            def _pkg_installed(pkg):
+                try:
+                    subprocess.check_output(['dpkg','-s',pkg], stderr=subprocess.DEVNULL)
+                    return True
+                except Exception:
+                    return False
+            needed_ok = True
+            if not get_candidates(CAP_SQUASHFS_EXTRACT) or not get_candidates(CAP_SQUASHFS_PACK): needed_ok = False
+            if not get_candidates(CAP_CRAMFS_EXTRACT) or not get_candidates(CAP_CRAMFS_PACK): needed_ok = False
+            if not get_candidates(CAP_JFFS2_PACK): needed_ok = False
+            # YAFFS2 pack optional
+            if shutil.which('binwalk') is None and not _pkg_installed('binwalk'): needed_ok = False
+            if needed_ok:
+                self.act_install_deps.setVisible(False)
+            else:
+                self.act_install_deps.setVisible(True)
+        except Exception:
+            pass
+
+    def _show_tool_chains(self):
+        try:
+            from tool_registry import log_summary
+            buf = []
+            def _c(msg): buf.append(msg)
+            log_summary(_c)
+            QMessageBox.information(self,'Tool Chains','\n'.join(buf))
+        except Exception as e:
+            QMessageBox.warning(self,'Tool Chains',f'Error: {e}')
+
+    def prompt_and_patch_boot_delay(self):
+        """Popup to choose new bootdelay then auto patch all candidate offsets (currently 0x100)."""
+        try:
+            if not getattr(self, 'fw_path', None):
+                QMessageBox.information(self,'Boot Delay','Please open a firmware first'); return
+            val, ok = QInputDialog.getInt(self,'Boot Delay','New boot delay (seconds):',3,0,600,1)
+            if not ok: return
+            outp = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','')+f'_bootdelay{val}.bin')
+            okc, msg = core_patch_boot_delay(self.fw_path, None, val, outp, lambda m: self.thread_log.emit(m))
+            if okc:
+                self.log(f'[BOOT] Patched bootdelay={val} -> {outp}')
+                QMessageBox.information(self,'Boot Delay',f'Success -> {outp}')
+            else:
+                self.log(f'[BOOT] patch failed: {msg}')
+                QMessageBox.warning(self,'Boot Delay', f'Failed: {msg}')
+        except Exception as e:
+            try:
+                self.log(f'[BOOT] exception: {e}')
+            except Exception: pass
+            try: QMessageBox.warning(self,'Boot Delay', f'Exception: {e}')
+            except Exception: pass
+
+    def _binwalk_self_test(self):
+        import shutil, subprocess, tempfile
+        bw = shutil.which('binwalk')
+        if not bw:
+            QMessageBox.information(self,'Binwalk','ไม่พบ binwalk ใน PATH')
+            return
+        # simple sanity: run binwalk on itself (should list ELF sections) or a tiny temp file
+        try:
+            tmp = tempfile.NamedTemporaryFile(delete=False)
+            tmp.write(b'\x7fELF\x00testbinwalk')
+            tmp.close()
+            proc = subprocess.run([bw,'-l','32',tmp.name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=8)
+            out = proc.stdout.splitlines()[:25]
+            QMessageBox.information(self,'Binwalk OK','พบ binwalk และรันสำเร็จ\n'+'\n'.join(out))
+        except Exception as e:
+            QMessageBox.warning(self,'Binwalk','binwalk run error: '+str(e))
+
+    def build_ui(self):
+        """Build the full UI (pages, menus, logs) in a single well‑scoped method."""
+        # Containers / base widgets
         self.pages = QStackedWidget()
+        self._submenu_connected = False
+        self._last_sub_index = {}
 
-        # Dashboard page
-        page_dashboard = QWidget(); dash_l = QVBoxLayout(page_dashboard)
+        # ---------------- Dashboard Page ----------------
+        page_dashboard = QWidget(); dash_l = QVBoxLayout(page_dashboard); dash_l.setSpacing(8); dash_l.setContentsMargins(12,12,12,12)
         b_open = QPushButton(_('btn_open_fw')); b_open.clicked.connect(self.select_firmware); dash_l.addWidget(b_open)
-        hpatch = QHBoxLayout()
-        for txt, act in [(_('btn_patch_boot'),'boot_delay'),(_('btn_patch_serial'),'serial'),(_('btn_patch_network'),'network'),(_('btn_patch_all'),'all')]:
-            b = QPushButton(txt); b.clicked.connect(lambda _=False, ac=act: self._run_quick_patch(ac)); hpatch.addWidget(b)
-        dash_l.addLayout(hpatch); dash_l.addStretch(); self.pages.addWidget(page_dashboard)
+        actions_row = QHBoxLayout(); self.btn_analyze = QPushButton('วิเคราะห์เฟิร์มแวร์ (Analyze Firmware)')
+        if hasattr(self, 'start_manual_analysis'): self.btn_analyze.clicked.connect(self.start_manual_analysis)
+        actions_row.addWidget(self.btn_analyze)
+        for txt, act in [(_('btn_patch_boot'),'boot_delay'),(_('btn_patch_serial'),'serial'),(_('btn_patch_network'),'network')]:
+            b = QPushButton(txt); b.clicked.connect(lambda _=False, ac=act: self._run_quick_patch(ac)); actions_row.addWidget(b)
+        actions_row.addStretch(); dash_l.addLayout(actions_row)
+        self.ai_summary_view = QTextEdit(); self.ai_summary_view.setReadOnly(True); self.ai_summary_view.setFixedHeight(180); dash_l.addWidget(self.ai_summary_view)
+        self.apply_suggested_btn = QPushButton('Apply suggested pipeline'); self.apply_suggested_btn.setObjectName('primaryButton'); self.apply_suggested_btn.clicked.connect(self.apply_suggested_pipeline); self.apply_suggested_btn.setEnabled(False)
+        self.cancel_apply_btn = QPushButton('Cancel'); self.cancel_apply_btn.setObjectName('cancelButton'); self.cancel_apply_btn.setEnabled(False)
+        try: self.apply_suggested_btn.setFixedHeight(36); self.cancel_apply_btn.setFixedHeight(36)
+        except Exception: pass
+        def _cancel_apply():
+            try:
+                w = getattr(self, '_active_apply_worker', None)
+                if not w: self.log('[AI] No active apply worker to cancel'); return
+                ans = QMessageBox.question(self, 'Cancel apply', 'Cancel running apply pipeline?', QMessageBox.Yes | QMessageBox.No)
+                if ans != QMessageBox.Yes: return
+                if getattr(w, 'request_cancel', None): w.request_cancel(); self.log('[AI] Cancel requested')
+                else: self.log('[AI] Worker cannot be cancelled')
+            except Exception as e: self.log(f'[AI] cancel error: {e}')
+        self.cancel_apply_btn.clicked.connect(_cancel_apply)
+        hbtn = QHBoxLayout(); hbtn.addWidget(self.apply_suggested_btn); hbtn.addWidget(self.cancel_apply_btn); hbtn.addStretch(); dash_l.addLayout(hbtn)
+        self.apply_progress = QProgressBar(); self.apply_progress.setMinimum(0); self.apply_progress.setMaximum(100); self.apply_progress.setValue(0); self.apply_progress.setVisible(False)
+        try: self.apply_progress.setFixedHeight(18); self.apply_progress.setTextVisible(True)
+        except Exception: pass
+        dash_l.addWidget(self.apply_progress); dash_l.addStretch(); self.pages.addWidget(page_dashboard)
 
-        # Tools page
+        # ---------------- Tools Page ----------------
         page_tools = QWidget(); t_l = QVBoxLayout(page_tools)
         self.msq_allow_destructive = QCheckBox('Allow destructive trimming (remove logs/tmp/docs)')
+        t_l.addWidget(self.msq_allow_destructive)
         for txt, slot in [('Multi-Squash: Dry-run', self.multi_squash_dryrun), ('Multi-Squash: Apply', self.multi_squash_apply)]:
             b = QPushButton(txt); b.clicked.connect(slot); t_l.addWidget(b)
         for txt, slot in [('Auto-Run: Dry (A)', lambda: self.auto_run_mode('A')), ('Auto-Run: Patch (B)', lambda: self.auto_run_mode('B')), ('Archive Outputs', self.archive_outputs)]:
             b = QPushButton(txt); b.clicked.connect(slot); t_l.addWidget(b)
         t_l.addStretch(); self.pages.addWidget(page_tools)
 
-        # AI page placeholder
-        page_ai = QWidget(); ai_l = QVBoxLayout(page_ai); ai_l.addWidget(QLabel('AI / Scan tools (placeholder)')); ai_l.addStretch(); self.pages.addWidget(page_ai)
-
-        # Special page
-        page_special = QWidget(); sp_l = QVBoxLayout(page_special)
-        sp_l.addWidget(QLabel('Special functions and utilities'))
+        # ---------------- Special Page ----------------
+        page_special = QWidget(); sp_l = QVBoxLayout(page_special); sp_l.addWidget(QLabel('Special functions and utilities'))
+        # U-Boot env candidates area (initially hidden until scan)
+        self.uboot_env_group = QGroupBox('U-Boot Environment (Detected)')
+        env_gl = QVBoxLayout(self.uboot_env_group)
+        self.env_list = QTreeWidget(); self.env_list.setHeaderLabels(['Offset','Size','Type','Vars','CRC','Bootdelay','Score'])
+        self.env_list.setColumnWidth(0,90); self.env_list.setColumnWidth(1,60); self.env_list.setColumnWidth(2,70)
+        env_btn_row = QHBoxLayout()
+        self.btn_scan_env = QPushButton('Scan Env (v2)')
+        self.btn_export_env = QPushButton('Export JSON')
+        self.btn_export_env.setEnabled(False)
+        env_btn_row.addWidget(self.btn_scan_env); env_btn_row.addWidget(self.btn_export_env); env_btn_row.addStretch()
+        env_gl.addLayout(env_btn_row); env_gl.addWidget(self.env_list)
+        self.uboot_env_group.setVisible(False)
+        sp_l.addWidget(self.uboot_env_group)
+        def _scan_env():
+            if not getattr(self, 'fw_path', None):
+                QMessageBox.information(self, 'Env Scan', 'Select a firmware first')
+                return
+            self.log('[UBOOT] scanning (v2)...')
+            try:
+                keep_mismatch = getattr(self, 'cfg_keep_crc_mismatch', True)
+                cands = scan_uboot_env_v2(self.fw_path, deep=True, keep_crc_mismatch=keep_mismatch)
+                self.env_list.clear()
+                for c in cands[:200]:
+                    it = QTreeWidgetItem([
+                        f"0x{c['offset']:X}", f"0x{c['size']:X}", c.get('type','block'),
+                        str(len(c.get('vars',{}))),
+                        'OK' if c.get('crc_ok') else 'BAD',
+                        str(c.get('bootdelay','')), f"{c.get('score',0):.1f}"
+                    ])
+                    if not c.get('crc_ok'):
+                        it.setForeground(4, Qt.red)
+                    if c.get('type')=='compiled':
+                        it.setForeground(2, Qt.blue)
+                    it.setData(0, Qt.UserRole, c)
+                    self.env_list.addTopLevelItem(it)
+                self.uboot_env_group.setVisible(True)
+                self.btn_export_env.setEnabled(bool(cands))
+                self.log_bilingual(f'สแกนพบ env {len(cands)} ชุด', f'Env candidates {len(cands)}')
+            except Exception as e:
+                self.log(f'[UBOOT] scan error: {e}')
+        def _export_env():
+            try:
+                items = []
+                for i in range(self.env_list.topLevelItemCount()):
+                    it = self.env_list.topLevelItem(i)
+                    data = it.data(0, Qt.UserRole)
+                    if data:
+                        # trim vars to safe length
+                        vars_lim = {k:(v[:200]+'...') if len(v)>200 else v for k,v in data.get('vars',{}).items()}
+                        d = {k:v for k,v in data.items() if k!='vars'}
+                        d['vars']=vars_lim
+                        items.append(d)
+                if not items:
+                    QMessageBox.information(self,'Export','No candidates to export')
+                    return
+                out_path = os.path.join(self.output_dir,'uboot_env_candidates.json')
+                with open(out_path,'w',encoding='utf-8') as f: json.dump(items,f,ensure_ascii=False,indent=2)
+                self.log(f'[UBOOT] wrote {out_path}')
+            except Exception as e:
+                self.log(f'[UBOOT] export error: {e}')
+        self.btn_scan_env.clicked.connect(_scan_env)
+        self.btn_export_env.clicked.connect(_export_env)
         parts_row = QHBoxLayout(); parts_row.addWidget(QLabel('RootFS Parts:'))
         self.parts_detect_btn = QPushButton('Detect Parts'); self.parts_detect_btn.clicked.connect(self.detect_rootfs_parts); parts_row.addWidget(self.parts_detect_btn)
         self.rootfs_part_spin = QSpinBox(); self.rootfs_part_spin.setMinimum(1); self.rootfs_part_spin.setMaximum(1); self.rootfs_part_spin.setEnabled(False)
@@ -1270,27 +1722,624 @@ class MainWindow(QMainWindow):
         part_actions.addStretch(); sp_l.addLayout(part_actions)
         self.parts_info_label = QLabel('No parts detected yet'); sp_l.addWidget(self.parts_info_label); sp_l.addStretch(); self.pages.addWidget(page_special)
 
-        # Settings page
-        page_settings = QWidget(); set_l = QVBoxLayout(page_settings); set_l.addWidget(QLabel('Settings and preferences')); set_l.addStretch(); self.pages.addWidget(page_settings)
-
-        # Sidebar population
-        for name, idx in [('Dashboard',0),('Tools',1),('AI / Scan',2),('Special',3),('Settings',4)]:
-            it = QTreeWidgetItem(sidebar); it.setText(0,name); it.setData(0, Qt.UserRole, idx)
-        tools_root = sidebar.topLevelItem(1)
-        if tools_root:
-            for text, action in [('Open Firmware','open_fw'),('Multi-Squash: Dry-run','msq_dry'),('Multi-Squash: Apply','msq_apply')]:
-                child = QTreeWidgetItem(tools_root); child.setText(0,text); child.setData(0, Qt.UserRole, (1, action))
-        sidebar.currentItemChanged.connect(lambda cur, prev: self._on_sidebar_changed(cur))
+        # ---------------- Settings Page ----------------
+        page_settings = QWidget(); set_l = QVBoxLayout(page_settings); set_l.addWidget(QLabel('Settings and preferences'))
         try:
-            if sidebar.topLevelItemCount()>0: sidebar.setCurrentItem(sidebar.topLevelItem(0))
+            auto_flag = os.path.expanduser('~/.local/share/firmware_toolkit/auto_install_enabled')
+            self.chk_auto_install = QCheckBox('Auto-install FMK dependencies on first run'); self.chk_auto_install.setChecked(os.path.exists(auto_flag))
+            def _toggle_auto_install(checked):
+                try:
+                    if checked: open(auto_flag,'w').write(datetime.datetime.now(datetime.UTC).isoformat()+'\n'); self.log('[SETUP] Auto-install enabled by user')
+                    else:
+                        try: os.remove(auto_flag)
+                        except Exception: pass
+                        self.log('[SETUP] Auto-install disabled by user')
+                except Exception as e: self.log(f'[SETUP] toggle auto-install failed: {e}')
+            self.chk_auto_install.toggled.connect(_toggle_auto_install); set_l.addWidget(self.chk_auto_install)
+            # Theme
+            set_l.addWidget(QLabel('Theme:'))
+            self.cmb_theme = QComboBox(); self.cmb_theme.addItems(['dark','light'])
+            cur_theme = 'dark'
+            try:
+                theme_flag = os.path.expanduser('~/.local/share/firmware_toolkit/theme')
+                if os.path.exists(theme_flag): cur_theme = open(theme_flag,'r').read().strip()
+            except Exception: pass
+            idx = 0 if cur_theme=='dark' else 1; self.cmb_theme.setCurrentIndex(idx)
+            def _on_theme_change(i):
+                try: self.apply_theme(self.cmb_theme.currentText())
+                except Exception as e: self.log(f'[THEME] selection failed: {e}')
+            self.cmb_theme.currentIndexChanged.connect(_on_theme_change); set_l.addWidget(self.cmb_theme)
+            # (Removed legacy Serial Port Section per new requirements)
+            self.selected_serial_port = None
+            # Advanced scanning options
+            adv_box = QGroupBox('Advanced / U-Boot Scan')
+            adv_l = QVBoxLayout(adv_box)
+            self.chk_keep_crc = QCheckBox('Keep CRC mismatch candidates (recommended)')
+            self.chk_keep_crc.setChecked(True)
+            def _toggle_keep_crc(v):
+                self.cfg_keep_crc_mismatch = bool(v)
+            self.chk_keep_crc.toggled.connect(_toggle_keep_crc)
+            self.cfg_keep_crc_mismatch = True
+            self.chk_dynamic_menu = QCheckBox('Dynamic reorder main menu by usage (top items first)')
+            self.chk_dynamic_menu.setChecked(False)
+            def _toggle_dyn(v):
+                self.cfg_dynamic_menu = bool(v)
+                if v: self._maybe_reorder_menu()
+            self.chk_dynamic_menu.toggled.connect(_toggle_dyn)
+            self.cfg_dynamic_menu = False
+            adv_l.addWidget(self.chk_keep_crc)
+            adv_l.addWidget(self.chk_dynamic_menu)
+            adv_l.addStretch()
+            set_l.addWidget(adv_box)
+        except Exception: pass
+        set_l.addStretch(); self.pages.addWidget(page_settings)
+
+        # ---------------- Left Main Menu ----------------
+        self.main_menu_widget = QWidget(); main_menu_layout = QVBoxLayout(self.main_menu_widget); main_menu_layout.setContentsMargins(0,0,0,0); main_menu_layout.setSpacing(6)
+        self.sub_menu_list = QListWidget(); self.sub_menu_list.setObjectName('subMenuList'); self.sub_menu_list.setFixedWidth(320)
+        self.status_panel = QWidget(); status_l = QVBoxLayout(self.status_panel); self.status_label = QLabel('Ready'); self.status_label.setObjectName('statusLock'); status_l.addWidget(self.status_label); status_l.addStretch()
+
+        # Declarative menu structure
+        self.MENU_STRUCTURE = [
+            {'key':'dashboard','title':'Dashboard','color':'#2962FF','submenu':[
+                {'id':'analyze','text':'วิเคราะห์เฟิร์มแวร์ (Analyze)'},
+                {'id':'apply_pipeline','text':'Apply suggested pipeline'}], 'page':page_dashboard},
+            # Reordered: Patching before FMK (user focus on quick patch actions) 
+            {'key':'patch','title':'Patching','color':'#AD1457','submenu':[
+                {'id':None,'text':'— Core Patches —'},  # header (non-selectable)
+                {'id':'boot_delay','text':'Boot Delay'},
+                {'id':'serial','text':'Serial Shell'},
+                {'id':'network','text':'Network'},
+                {'id':None,'text':'— Advanced —'},
+                {'id':'selective','text':'Selective Patch...'}], 'page':page_tools},
+            {'key':'fmk','title':'FMK','color':'#2E7D32','submenu':[
+                {'id':'extract','text':'Extract (FW Manager)'},
+                {'id':'install','text':'Install/Update FMK'},
+                {'id':'install_deps','text':'Install FMK Dependencies'},
+                {'id':None,'text':'— Filesystems —'},
+                {'id':'fs_squashfs','text':'Browse SquashFS'},
+                {'id':'fs_cramfs','text':'Browse CramFS'},
+                {'id':'fs_jffs2','text':'Browse JFFS2'},
+                {'id':'fs_yaffs2','text':'Browse YAFFS2'}], 'page':page_tools},
+            {'key':'tools','title':'Tools','color':'#F57C00','submenu':[
+                {'id':'msq_dry','text':'Multi-Squash: Dry-run'},
+                {'id':'msq_apply','text':'Multi-Squash: Apply'},
+                {'id':'archive','text':'Archive Outputs'}], 'page':page_tools},
+            {'key':'special','title':'Special','color':'#6A1B9A','submenu':[], 'page':page_special},
+            {'key':'settings','title':'Settings','color':'#455A64','submenu':[], 'page':page_settings},
+        ]
+        # Icon mapping (emoji placeholders can be replaced with QIcons later)
+        self.ACTION_ICONS = {
+            ('dashboard','analyze'):'🔍',
+            ('dashboard','apply_pipeline'):'⚙️',
+            ('patch','boot_delay'):'⏱️',
+            ('patch','serial'):'🖧',
+            ('patch','network'):'🌐',
+            ('patch','selective'):'🧩',
+            ('fmk','extract'):'📦',
+            ('fmk','install'):'⬇️',
+            ('fmk','install_deps'):'🛠️',
+            ('fmk','fs_squashfs'):'📂',
+            ('fmk','fs_cramfs'):'📂',
+            ('fmk','fs_jffs2'):'📂',
+            ('fmk','fs_yaffs2'):'📂',
+            ('tools','msq_dry'):'🧪',
+            ('tools','msq_apply'):'✅',
+            ('tools','archive'):'🗜️',
+            ('tools','clean_vendor'):'🧹',
+        }
+        self._action_usage = {}
+        self._menu_index_by_key = {}; self._menu_children = {}; self._main_menu_buttons = []
+        for idx, item in enumerate(self.MENU_STRUCTURE):
+            try:
+                if self.pages.indexOf(item['page']) == -1: self.pages.addWidget(item['page'])
+            except Exception: pass
+            self._menu_index_by_key[item['key']] = idx
+            self._menu_children[idx] = [(c['text'], (item['key'], c['id'])) for c in item.get('submenu', [])]
+            btn = QPushButton(item['title']); btn.setObjectName('mainMenuButton'); btn.setCheckable(True)
+            btn.setToolTip(item['title']+'\n'+item['key'])
+            btn.setStyleSheet(f"QPushButton#mainMenuButton{{background:{item['color']};color:#fff;font-weight:bold;padding:10px; text-align:left;}} QPushButton#mainMenuButton:checked{{border:2px solid #fff;}}")
+            btn.clicked.connect(lambda _, ix=idx: self._on_main_menu_clicked(ix))
+            btn.setMinimumHeight(44)
+            main_menu_layout.addWidget(btn); self._main_menu_buttons.append(btn)
+        self.btn_open_fw_side = QPushButton('Open Firmware / เปิดไฟล์'); self.btn_open_fw_side.clicked.connect(self.select_firmware); self.btn_open_fw_side.setStyleSheet('QPushButton{background:#455A64;color:#fff;} QPushButton:hover{background:#546E7A;}'); main_menu_layout.addWidget(self.btn_open_fw_side); main_menu_layout.addStretch()
+        if self._main_menu_buttons:
+            try: self._main_menu_buttons[0].setChecked(True); self._populate_submenu(0); self.pages.setCurrentWidget(self.MENU_STRUCTURE[0]['page'])
+            except Exception: pass
+        self._register_actions()
+        # Warn about missing handlers
+        try:
+            missing=[(g['key'],c['id']) for g in self.MENU_STRUCTURE for c in g.get('submenu',[]) if (g['key'],c['id']) not in self._action_handlers]
+            if missing: self.log_bilingual('เตือน: มี action ไม่มี handler: '+str(missing), 'Warning: missing handlers '+str(missing))
+        except Exception: pass
+        self.log_bilingual(f'โหลดโครงสร้างเมนู {len(self._main_menu_buttons)} หมวด', f'Loaded {len(self._main_menu_buttons)} menu groups')
+
+        # ---------------- Logs / Right Pane ----------------
+        right_tabs = QTabWidget(); right_tabs.setDocumentMode(True)
+        self.log_view_th = QTextEdit(); self.log_view_th.setReadOnly(True)
+        self.log_view_en = QTextEdit(); self.log_view_en.setReadOnly(True)
+        right_tabs.addTab(self.log_view_th,'บันทึก (TH)'); right_tabs.addTab(self.log_view_en,'Logs (EN)')
+        self.btn_clear_logs = QPushButton('ล้างบันทึก')
+        def _clear_logs():
+            try: self.log_view_th.clear(); self.log_view_en.clear(); self.log('[SYSTEM] ล้างบันทึกแล้ว (Logs cleared)')
+            except Exception: pass
+        self.btn_clear_logs.clicked.connect(_clear_logs)
+
+        # ---------------- Split Layout ----------------
+        hsplit = QSplitter(Qt.Horizontal)
+        left_widget = QWidget(); left_l = QVBoxLayout(left_widget); left_l.setContentsMargins(6,6,6,6); left_l.addWidget(self.main_menu_widget); left_l.addStretch(); hsplit.addWidget(left_widget)
+        center_widget = QWidget(); center_l = QVBoxLayout(center_widget); center_l.setContentsMargins(6,6,6,6); center_l.addWidget(self.sub_menu_list); center_l.addWidget(self.pages); center_widget.setLayout(center_l); hsplit.addWidget(center_widget)
+        right_widget = QWidget(); right_wl = QVBoxLayout(right_widget); right_wl.setContentsMargins(4,4,4,4); right_split = QSplitter(Qt.Vertical); self._right_split = right_split
+        status_wrap = QWidget(); sw_l = QVBoxLayout(status_wrap); sw_l.setContentsMargins(0,0,0,0); sw_l.addWidget(self.status_panel); sw_l.addWidget(self.btn_clear_logs); sw_l.addStretch()
+        logs_wrap = QWidget(); lw_l = QVBoxLayout(logs_wrap); lw_l.setContentsMargins(0,0,0,0); lw_l.addWidget(right_tabs)
+        right_split.addWidget(status_wrap); right_split.addWidget(logs_wrap); right_split.setStretchFactor(0,0); right_split.setStretchFactor(1,1)
+        right_wl.addWidget(right_split); right_widget.setLayout(right_wl); hsplit.addWidget(right_widget)
+        try:
+            from PySide6.QtCore import QTimer; QTimer.singleShot(50, lambda: right_split.setSizes([220,420]))
+        except Exception: pass
+        self.log_view = self.log_view_th
+        main_container = QWidget(); main_layout = QVBoxLayout(main_container); main_layout.addWidget(hsplit); self.setCentralWidget(main_container)
+        try:
+            from PySide6.QtGui import QFont; app = QApplication.instance();
+            if app: app.setFont(QFont('Segoe UI',11))
+        except Exception: pass
+        try:
+            theme_flag = os.path.expanduser('~/.local/share/firmware_toolkit/theme'); theme_choice = 'dark'
+            if os.path.exists(theme_flag): theme_choice = open(theme_flag,'r').read().strip() or 'dark'
+            self.apply_theme(theme_choice)
+        except Exception: pass
+        # Ensure menu visible if future refactor empties it
+        self._ensure_main_menu_visible()
+    # (Vendor tool menu already registered in __init__; no extra call here)
+
+    def apply_theme(self, theme_name: str):
+        """Apply a simple light/dark stylesheet and persist choice."""
+        try:
+            dark_qss = '''
+                QWidget{ background: #1f1f1f; color: #ededed; }
+                QTreeWidget { background: #252525; }
+                QTextEdit, QTabWidget, QStackedWidget { background: #181818; color: #eaeaea; }
+                QPushButton { background: #2a82da; color: #fff; border-radius:4px; padding:6px; }
+                QPushButton:pressed { background: #2266b0; }
+                QLineEdit, QSpinBox, QComboBox { background: #2b2b2b; color: #fff; }
+            '''
+            light_qss = '''
+                QWidget{ background: #f6f6f6; color: #111111; }
+                QTreeWidget { background: #ffffff; }
+                QTextEdit, QTabWidget, QStackedWidget { background: #ffffff; color: #111111; }
+                QPushButton { background: #1976d2; color: #fff; border-radius:4px; padding:6px; }
+                QPushButton:pressed { background: #0f5ca8; }
+                QLineEdit, QSpinBox, QComboBox { background: #ffffff; color: #111; }
+            '''
+            app = QApplication.instance()
+            if not app:
+                return
+            if theme_name == 'dark':
+                app.setStyleSheet(dark_qss)
+            else:
+                app.setStyleSheet(light_qss)
+            try:
+                theme_flag = os.path.expanduser('~/.local/share/firmware_toolkit/theme')
+                os.makedirs(os.path.dirname(theme_flag), exist_ok=True)
+                with open(theme_flag,'w') as f: f.write(theme_name)
+            except Exception:
+                pass
+        except Exception as e:
+            self.log(f'[THEME] apply failed: {e}')
+
+    # ---------------- Vendor Tools Integration ----------------
+    def _register_vendor_tool_actions(self):
+        """สแกน tools_bin และ tools_bin/bin แล้วเพิ่มเป็นเมนู Tools -> Vendor Tools
+        ข้ามไฟล์ซอร์ส/ออบเจ็กต์ เหลือเฉพาะไฟล์ executable
+        """
+        try:
+            menubar = self.menuBar()
+            tools_menu = None
+            for act in menubar.actions():
+                if act.text() == 'Tools':
+                    tools_menu = act.menu(); break
+            if tools_menu is None:
+                return
+            from PySide6.QtWidgets import QMenu
+            vendor_menu = None
+            for act in tools_menu.actions():
+                if act.menu() and act.text() == 'Vendor Tools':
+                    vendor_menu = act.menu(); break
+            if vendor_menu is None:
+                vendor_menu = QMenu('Vendor Tools', self)
+                tools_menu.addMenu(vendor_menu)
+            here = os.path.dirname(__file__)
+            roots = [os.path.join(here,'tools_bin'), os.path.join(here,'tools_bin','bin')]
+            skip_ext = {'.c','.cc','.cpp','.h','.hpp','.o','.obj','.py','.pyc','.md','.txt','.ac','.am','.in','.log'}
+            added = 0; seen=set()
+            for root in roots:
+                if not os.path.isdir(root): continue
+                for fn in sorted(os.listdir(root)):
+                    if fn in seen: continue
+                    seen.add(fn)
+                    fp = os.path.join(root, fn)
+                    if not os.path.isfile(fp): continue
+                    _, ext = os.path.splitext(fn)
+                    if ext.lower() in skip_ext: continue
+                    if not os.access(fp, os.X_OK): continue
+                    act = QAction(fn, self)
+                    act.triggered.connect(lambda _=False, p=fp: self._run_vendor_tool(p))
+                    vendor_menu.addAction(act); added += 1
+            if added:
+                self.thread_log.emit(f'[TOOLS] เพิ่มเมนู Vendor Tools {added} รายการ')
+            else:
+                try: self.thread_log.emit('[TOOLS] ไม่พบเครื่องมือ vendor (ไม่มีไฟล์ executable)')
+                except Exception: pass
+        except Exception as e:
+            try: self.thread_log.emit(f'[TOOLS] vendor menu error: {e}')
+            except Exception: pass
+
+    def _run_vendor_tool(self, path):
+        try:
+            runner = FMKRunner([path,'--help'])  # ใช้ --help เพื่อแสดงข้อมูล ไม่ทำลายข้อมูล
+            name = os.path.basename(path)
+            runner.log.connect(lambda m,n=name: self.thread_log.emit(f'[VENDOR:{n}] {m}'))
+            runner.error.connect(lambda e,n=name: self.thread_log.emit(f'[VENDOR:{n}] ERROR {e}'))
+            runner.finished.connect(lambda rc,n=name: self.thread_log.emit(f'[VENDOR:{n}] finished rc={rc}'))
+            runner.start(); self._register_thread(runner)
+        except Exception as e:
+            try: self.thread_log.emit(f'[VENDOR] run error {path}: {e}')
+            except Exception: pass
+
+    # ---------------- Menu helper methods ----------------
+    def _on_main_menu_clicked(self, index: int):
+        """Handle main menu button clicks: check the clicked button and populate submenu."""
+        try:
+            for i, b in enumerate(self._main_menu_buttons):
+                try:
+                    b.setChecked(i == index)
+                except Exception:
+                    pass
+            self._populate_submenu(index)
+            # แสดงหน้าของกลุ่มเมนูเสมอ (ทำให้ Settings / Special ทำงานชัดเจน)
+            try:
+                page = self.MENU_STRUCTURE[index]['page']
+                if page:
+                    self.pages.setCurrentWidget(page)
+                # อัพเดตสถานะ
+                try:
+                    title = self.MENU_STRUCTURE[index]['title']
+                    self.status_label.setText(f"{title} | Ready")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # หากไม่มี submenu ให้เปลี่ยนสถานะ log
+            if not self._menu_children.get(index):
+                self.log_bilingual('เปิดหน้าหมวด: '+self.MENU_STRUCTURE[index]['title'], 'Opened menu page: '+self.MENU_STRUCTURE[index]['title'])
+            # restore last submenu selection if exists
+            if self.sub_menu_list.count() and index in self._last_sub_index:
+                row = self._last_sub_index.get(index, 0)
+                if 0 <= row < self.sub_menu_list.count():
+                    try: self.sub_menu_list.setCurrentRow(row)
+                    except Exception: pass
+        except Exception as e:
+            try: self.log(f'menu click error: {e}')
+            except Exception: pass
+
+    def _populate_submenu(self, main_index: int):
+        """Populate the center sub-menu list for the given main menu index."""
+        try:
+            self.sub_menu_list.clear()
+            children = self._menu_children.get(main_index, [])
+            for label, action in children:
+                # Header rows (non-selectable) when action id is None
+                if isinstance(action, tuple) and action[1] is None:
+                    it = QListWidgetItem(label)
+                    # mark as header
+                    it.setFlags(it.flags() & ~Qt.ItemIsSelectable & ~Qt.ItemIsEnabled)
+                    it.setData(Qt.UserRole, None)
+                    it.setForeground(Qt.gray)
+                    font = it.font(); font.setBold(True); it.setFont(font)
+                    self.sub_menu_list.addItem(it)
+                    continue
+                it = QListWidgetItem()
+                icon_txt = ''
+                if isinstance(action, tuple):
+                    icon_txt = self.ACTION_ICONS.get(action, '')
+                display = f"{icon_txt+'  ' if icon_txt else ''}{label}"
+                it.setText(display)
+                it.setData(Qt.UserRole, action)
+                it.setToolTip(label)
+                self.sub_menu_list.addItem(it)
+            # จัดการสัญญาณ itemActivated ป้องกัน warning disconnect
+            if not getattr(self, '_submenu_connected', False):
+                try:
+                    self.sub_menu_list.itemActivated.connect(self._on_submenu_activated)
+                    self._submenu_connected = True
+                except Exception:
+                    pass
+            # auto-select first submenu item (optional UX enhancement)
+            if self.sub_menu_list.count() > 0:
+                try:
+                    self.sub_menu_list.setCurrentRow(0)
+                except Exception:
+                    pass
+        except Exception as e:
+            try: self.log(f'populate submenu error: {e}')
+            except Exception: pass
+
+    def _on_submenu_activated(self, item):
+        """Dispatch submenu actions when a user activates an item."""
+        try:
+            data = item.data(Qt.UserRole)
+            if isinstance(data, tuple) and len(data)==2:
+                handler = self._action_handlers.get(data)
+                # บันทึกตำแหน่ง submenu ล่าสุดของ group
+                try:
+                    main_index = self._current_main_index()
+                    if main_index is not None:
+                        self._last_sub_index[main_index] = self.sub_menu_list.currentRow()
+                except Exception: pass
+                if handler:
+                    return self._invoke_action(data, handler)
+                else:
+                    self.log_bilingual(f'ไม่พบ handler สำหรับ {data}', f'No handler for {data}')
+            elif isinstance(data, str) and data == 'open_fw':
+                return self.select_firmware()
+            elif isinstance(data, int):
+                return self.pages.setCurrentIndex(data)
+        except Exception as e:
+            try: self.log(f'submenu activation error: {e}')
+            except Exception: pass
+
+    def _register_actions(self):
+        """Central registry for submenu action handlers."""
+        try:
+            self._action_handlers = {
+                ('dashboard','analyze'): lambda: self.start_manual_analysis(),
+                ('dashboard','apply_pipeline'): lambda: self.apply_suggested_pipeline(),
+                ('fmk','extract'): lambda: self.fmk_extract_wrapper(),
+                ('fmk','install'): lambda: self.fmk_build_wrapper(),
+                ('fmk','install_deps'): lambda: self.install_fmk_deps(),
+                ('fmk','fs_squashfs'): lambda: self._open_fs_browser('squashfs'),
+                ('fmk','fs_cramfs'): lambda: self._open_fs_browser('cramfs'),
+                ('fmk','fs_jffs2'): lambda: self._open_fs_browser('jffs2'),
+                ('fmk','fs_yaffs2'): lambda: self._open_fs_browser('yaffs2'),
+                ('patch','boot_delay'): lambda: self._run_quick_patch('boot_delay'),
+                ('patch','serial'): lambda: self._run_quick_patch('serial'),
+                ('patch','network'): lambda: self._run_quick_patch('network'),
+                ('patch','selective'): lambda: self.open_selective_patch_dialog(),
+                ('tools','msq_dry'): lambda: self.multi_squash_dryrun(),
+                ('tools','msq_apply'): lambda: self.multi_squash_apply(),
+                ('tools','archive'): lambda: self.archive_outputs(),
+            }
+        except Exception as e:
+            try: self.log(f'action registry error: {e}')
+            except Exception: pass
+
+    def _current_main_index(self):
+        try:
+            for i,b in enumerate(self._main_menu_buttons):
+                if b.isChecked(): return i
+        except Exception: pass
+        return None
+
+    def _invoke_action(self, key_tuple, handler):
+        """Wrap action execution with status updates/logging."""
+        try:
+            self.status_label.setText(f'Running: {key_tuple}')
+        except Exception: pass
+        try:
+            res = handler()
+            # usage stats
+            try: self._action_usage[key_tuple] = self._action_usage.get(key_tuple,0)+1
+            except Exception: pass
+            # dynamic menu reorder if enabled
+            self._maybe_reorder_menu()
+            try:
+                self.status_label.setText(f'Done: {key_tuple}')
+            except Exception: pass
+            # reset to Ready after short delay (lazy timer if available)
+            try:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(1500, lambda: self.status_label.setText('Ready'))
+            except Exception: pass
+            return res
+        except Exception as e:
+            try:
+                self.status_label.setText(f'Error: {key_tuple}')
+            except Exception: pass
+            self.log(f'[ACTION] error {key_tuple}: {e}')
+            raise
+
+    def _scan_serial_candidates(self):
+        """Scan current firmware (light heuristic) + host for plausible serial console device names.
+        Returns list of text entries (e.g. 'ttyS0 (in firmware)', 'ttyAMA0 (firmware+host)')."""
+        result = []
+        # firmware heuristic
+        try:
+            fw = getattr(self, 'fw_path', None)
+            if fw and os.path.exists(fw):
+                firmware_ports = ['ttyS0','ttyS1','ttyAMA0','ttyUSB0']
+                for p in firmware_ports:
+                    if p not in result:
+                        result.append(f"{p} (firmware guess)")
+        except Exception:
+            pass
+        # host ports
+        try:
+            from glob import glob
+            host_patterns = ['/dev/ttyUSB*','/dev/ttyACM*','/dev/ttyS*','/dev/ttyAMA*']
+            host_found = []
+            for pat in host_patterns:
+                for path in glob(pat):
+                    base = os.path.basename(path)
+                    tag = f"{base} (host)"
+                    if tag not in result:
+                        result.append(tag)
+                        host_found.append(base)
+        except Exception:
+            pass
+        # de-duplicate on base
+        seen_base = set(); final=[]
+        for label in result:
+            base = label.split()[0]
+            if base in seen_base: continue
+            seen_base.add(base); final.append(label)
+        if not final: final=['ttyS0']
+        return final
+
+    # ---------------- Filesystem Browsers ----------------
+    def _open_fs_browser(self, fs_type: str):
+        """Open filesystem editor for specified fs_type using first matching detected part.
+        Steps:
+          1. Ensure firmware loaded and parts detected (self.parts or re-scan via multisquash.detect_squashfs for squashfs only fallback)
+          2. Pick first part whose 'fs' matches fs_type
+          3. Extract (if not cached) to temp dir using extract_rootfs
+          4. Open RootFSEditDialog (re-using existing UI)
+        """
+        try:
+            fw = getattr(self, 'fw_path', None)
+            if not fw or not os.path.exists(fw):
+                self.log_bilingual('กรุณาเปิดไฟล์เฟิร์มแวร์ก่อน', 'Please open a firmware first')
+                return
+            # ensure parts list
+            parts = getattr(self, 'rootfs_parts', None)
+            if not parts:
+                # attempt simple detection: reuse earlier logic if available
+                parts = []
+                try:
+                    size = os.path.getsize(fw)
+                    # naive scan for fixed-size blocks where magic matches
+                    with open(fw,'rb') as f:
+                        data = f.read()
+                    block_size = 0x20000  # 128KB typical in log examples
+                    for off in range(0, len(data), block_size):
+                        if off+ block_size > len(data): break
+                        head = data[off:off+16]
+                        # quick magics
+                        if head.startswith(b'hsqs') or head.startswith(b'sqsh'):
+                            parts.append({'offset':off,'size':block_size,'fs':'squashfs'})
+                        elif head[:4] in (b'\x45\x3d\xcd\x28', b'\x28\xcd\x3d\x45'):
+                            parts.append({'offset':off,'size':block_size,'fs':'cramfs'})
+                        elif head[:2] == b'\x85\x19':
+                            parts.append({'offset':off,'size':block_size,'fs':'jffs2'})
+                        elif b'yaffs' in head.lower():
+                            parts.append({'offset':off,'size':block_size,'fs':'yaffs2'})
+                except Exception:
+                    pass
+                self.rootfs_parts = parts
+            # choose part
+            target = None
+            for p in parts or []:
+                if p.get('fs') == fs_type:
+                    target = p; break
+            if not target:
+                self.log_bilingual(f'ไม่พบพาร์ท {fs_type}', f'No {fs_type} part found')
+                return
+            # cache check
+            cache_attr = f'edit_cache_{fs_type}'
+            if getattr(self, cache_attr, None):
+                extract_dir = getattr(self, cache_attr)
+            else:
+                import tempfile
+                tmpdir = tempfile.mkdtemp(prefix=f'fsbrowse_{fs_type}_')
+                rootfs_bin = os.path.join(tmpdir,'rootfs.bin')
+                with open(fw,'rb') as f:
+                    f.seek(target['offset']); blob = f.read(target['size'])
+                with open(rootfs_bin,'wb') as f: f.write(blob)
+                extract_dir = os.path.join(tmpdir,'extract'); os.makedirs(extract_dir, exist_ok=True)
+                from app import extract_rootfs
+                ok, err = extract_rootfs(fs_type, rootfs_bin, extract_dir, self.log)
+                if not ok and fs_type != 'auto':
+                    self.log(f'[FS_BROWSER] retry auto after {fs_type} fail: {err}')
+                    ok, err = extract_rootfs('auto', rootfs_bin, extract_dir, self.log)
+                    if ok:
+                        fs_type = 'auto'
+                if not ok:
+                    self.log_bilingual(f'แตก {fs_type} ล้มเหลว: {err}', f'Extract {fs_type} failed: {err}')
+                    return
+                setattr(self, cache_attr, extract_dir)
+                self.log_bilingual(f'แตก {fs_type} -> {extract_dir}', f'Extracted {fs_type} -> {extract_dir}')
+            # open dialog
+            try:
+                from dialogs.rootfs_editor import RootFSEditDialog
+                part_info = {'fs':fs_type,'offset':target['offset'],'size':target['size']}
+                dlg = RootFSEditDialog(self, extract_dir, part_info, fw, self.output_dir)
+                dlg.exec()
+            except Exception as e:
+                self.log_bilingual(f'เปิด editor ไม่สำเร็จ: {e}', f'Open editor failed: {e}')
+        except Exception as e:
+            try: self.log(f'[FS] open {fs_type} error: {e}')
+            except Exception: pass
+
+    # ---------------- Responsive behaviour ----------------
+    def resizeEvent(self, event):  # type: ignore
+        try:
+            self._update_responsive()
+        except Exception:
+            pass
+        return super().resizeEvent(event)
+
+    def _update_responsive(self):
+        """Compact main menu when window narrow for better responsiveness."""
+        if not getattr(self, '_main_menu_buttons', None):
+            return
+        w = self.width()
+        threshold = 1020
+        if w < threshold and not getattr(self, '_compact_mode', False):
+            self._compact_mode = True
+            # store originals
+            self._orig_titles = [b.text() for b in self._main_menu_buttons]
+            for b in self._main_menu_buttons:
+                t = b.text()
+                # take first letter + maybe emoji from first action icon
+                b.setText(t[:1])
+                b.setToolTip(t)
+        elif w >= threshold and getattr(self, '_compact_mode', False):
+            # restore
+            for b, title in zip(self._main_menu_buttons, getattr(self, '_orig_titles', [])):
+                b.setText(title)
+            self._compact_mode = False
+        # adjust submenu header style
+        try:
+            for i in range(self.sub_menu_list.count()):
+                it = self.sub_menu_list.item(i)
+                if it and not it.data(Qt.UserRole):
+                    font = it.font(); font.setPointSize(10 if w < threshold else 11); it.setFont(font)
         except Exception:
             pass
 
-        right_tabs = QTabWidget(); self.log_view = QTextEdit(); self.log_view.setReadOnly(True); right_tabs.addTab(self.log_view, _('tab_log'))
-        hsplit = QSplitter(Qt.Horizontal)
-        left_widget = QWidget(); left_l = QVBoxLayout(left_widget); left_l.addWidget(sidebar); left_l.addStretch(); hsplit.addWidget(left_widget)
-        mid_widget = QWidget(); mid_l = QVBoxLayout(mid_widget); mid_l.addWidget(self.pages); mid_widget.setLayout(mid_l); hsplit.addWidget(mid_widget); hsplit.addWidget(right_tabs)
-        main_container = QWidget(); main_layout = QVBoxLayout(main_container); main_layout.addWidget(hsplit); self.setCentralWidget(main_container)
+    def _maybe_reorder_menu(self):
+        """Reorder main menu buttons by usage if enabled (keeps relative new order stable)."""
+        if not getattr(self,'cfg_dynamic_menu', False):
+            return
+        try:
+            usage_scores = {}
+            for (grp, act), count in getattr(self,'_action_usage',{}).items():
+                usage_scores[grp] = usage_scores.get(grp,0)+count
+            if not usage_scores:
+                return
+            # sort menu structure copy
+            ordered = sorted(self.MENU_STRUCTURE, key=lambda g: -usage_scores.get(g['key'],0))
+            if [g['key'] for g in ordered] == [g['key'] for g in self.MENU_STRUCTURE]:
+                return  # no change
+            self.MENU_STRUCTURE = ordered
+            # rebuild buttons
+            lay = self.main_menu_widget.layout()
+            while lay.count()>0:
+                item = lay.takeAt(0)
+                w = item.widget()
+                if w: w.deleteLater()
+            self._main_menu_buttons=[]
+            for idx,item in enumerate(self.MENU_STRUCTURE):
+                btn = QPushButton(item['title']); btn.setObjectName('mainMenuButton'); btn.setCheckable(True)
+                btn.setStyleSheet(f"QPushButton#mainMenuButton{{background:{item['color']};color:#fff;font-weight:bold;padding:10px; text-align:left;}} QPushButton#mainMenuButton:checked{{border:2px solid #fff;}}")
+                btn.clicked.connect(lambda _, ix=idx: self._on_main_menu_clicked(ix))
+                lay.addWidget(btn); self._main_menu_buttons.append(btn)
+            lay.addStretch()
+            if self._main_menu_buttons:
+                self._main_menu_buttons[0].setChecked(True)
+                self._populate_submenu(0)
+            self.log_bilingual('จัดลำดับเมนูใหม่ตามการใช้งาน', 'Reordered main menu by usage')
+        except Exception as e:
+            self.log(f'[DYN] reorder failed: {e}')
 
     def select_firmware(self):
         res = QFileDialog.getOpenFileName(self, _('btn_open_fw'))
@@ -1299,14 +2348,145 @@ class MainWindow(QMainWindow):
         if path:
             self.fw_path = path
             self.log(f'Selected {path}')
-            # auto-detect parts immediately for convenience
-            self.detect_rootfs_parts(auto=True)
+            # Manual mode: no automatic analysis/patching
+            self.log('[INFO] Manual mode: click "Analyze Firmware" to generate suggestions.')
+
+    def start_manual_analysis(self):
+        if not getattr(self, 'fw_path', None):
+            QMessageBox.information(self, 'Analyze', 'Select a firmware first')
+            return
+        if getattr(self, '_analysis_running', False):
+            self.log('[AI] Analysis already running')
+            return
+        self._analysis_running = True
+        self.log('[AI] Manual analysis started...')
+        def _run():
+            try:
+                self.ai_orchestrator(manual=True)
+            finally:
+                self._analysis_running = False
+        threading.Thread(target=_run, daemon=True).start()
 
     def log(self, text):
         try:
-            self.log_view.append(str(text))
+            msg = str(text)
+            if hasattr(self, 'log_view_th') and hasattr(self, 'log_view_en'):
+                # ถ้าไม่มีตัวอักษรไทย ให้พยายามแปล
+                if not any('\u0e00' <= ch <= '\u0e7f' for ch in msg):
+                    th = self._auto_translate_en(msg)
+                    if th:
+                        self.log_view_th.append(f"{th} ({msg})")
+                        self.log_view_en.append(msg)
+                    else:
+                        self.log_view_th.append(msg)
+                        self.log_view_en.append(msg)
+                else:
+                    # มีไทยแล้ว: แยก EN ในวงเล็บ ถ้ามี
+                    en_part = None
+                    if '(' in msg and msg.endswith(')'):
+                        try:
+                            inner = msg[msg.rfind('(')+1:-1]
+                            if inner and all(ord(c) < 128 for c in inner):
+                                en_part = inner
+                        except Exception:
+                            pass
+                    self.log_view_th.append(msg)
+                    self.log_view_en.append(en_part if en_part else msg)
         except Exception:
-            print(text)
+            try:
+                print(text)
+            except Exception:
+                pass
+
+    def _auto_translate_en(self, en: str) -> str:
+        """แปลวลีสถานะทั่วไป EN -> TH (อย่างง่าย) ถ้าไม่รู้จักคืนค่าว่าง"""
+        try:
+            base = en.strip()
+            # ตัดข้อมูลตัวแปร เช่น ชื่อไฟล์ หลัง ':' หรือ ' -> '
+            patterns = [
+                ('Pipeline cancelled by user', 'ยกเลิกกระบวนการตามผู้ใช้'),
+                ('Pipeline finished', 'กระบวนการเสร็จสิ้น'),
+                ('Pipeline applied', 'ใช้แพตช์ตามที่เสนอแล้ว'),
+                ('Apply suggested pipeline cancelled by user', 'ยกเลิกการใช้แพตช์ที่เสนอ'),
+                ('No suggestions chosen', 'ไม่ได้เลือกข้อเสนอใด'),
+                ('No active apply worker to cancel', 'ไม่มีงานกำลังทำให้ยกเลิก'),
+                ('Cancel requested', 'ร้องขอยกเลิกแล้ว'),
+                ('Cancel aborted by user', 'ยกเลิกการยกเลิกโดยผู้ใช้'),
+                ('Worker cannot be cancelled', 'งานนี้ไม่สามารถยกเลิกได้'),
+                ('Manual analysis started', 'เริ่มการวิเคราะห์แบบแมนนวล'),
+                ('Analysis already running', 'กำลังวิเคราะห์อยู่แล้ว'),
+                ('Orchestrator started', 'เริ่มตัวควบคุมงาน'),
+                ('Orchestrator finished', 'ตัวควบคุมงานเสร็จสิ้น'),
+                ('no firmware selected', 'ยังไม่ได้เลือกเฟิร์มแวร์'),
+                ('running deep scan', 'กำลังสแกนเชิงลึก'),
+                ('deep scan error', 'สแกนเชิงลึกผิดพลาด'),
+                ('rootfs/uboot detection error', 'ตรวจหา rootfs/u-boot ผิดพลาด'),
+                ('compose summary failed', 'สร้างสรุปล้มเหลว'),
+                ('apply pipeline start failed', 'เริ่มใช้ pipeline ล้มเหลว'),
+                ('Cancel error', 'ยกเลิกผิดพลาด'),
+                ('Install FMK Dependencies', 'ติดตั้ง dependencies ของ FMK'),
+                ('Auto-install enabled by user', 'เปิดใช้ติดตั้งอัตโนมัติ'),
+                ('Auto-install disabled by user', 'ปิดใช้ติดตั้งอัตโนมัติ'),
+                ('apply failed', 'การใช้ล้มเหลว'),
+                ('apply succeeded', 'การใช้สำเร็จ'),
+            ]
+            lower = base.lower()
+            for key, th in patterns:
+                if key.lower() in lower:
+                    return th
+            return ''
+        except Exception:
+            return ''
+
+    def log_bilingual(self, th_text: str, en_text: str):
+        """บันทึกสองภาษา: TH (EN) -> TH tab และ EN tab แยกชัด"""
+        try:
+            if hasattr(self, 'log_view_th'): self.log_view_th.append(f"{th_text} ({en_text})")
+            if hasattr(self, 'log_view_en'): self.log_view_en.append(en_text)
+        except Exception:
+            pass
+
+    def _ensure_main_menu_visible(self):
+        try:
+            if getattr(self, '_main_menu_buttons', None) and self._main_menu_buttons:
+                return
+            # Rebuild if empty
+            groups = getattr(self, '_groups_data', [])
+            if not groups:
+                return
+            layout = None
+            try:
+                layout = self.main_menu_widget.layout()
+            except Exception:
+                pass
+            if layout is None:
+                from PySide6.QtWidgets import QVBoxLayout
+                layout = QVBoxLayout(self.main_menu_widget)
+            self._main_menu_buttons = []
+            for i,(name, idx, children) in enumerate(groups):
+                b = QPushButton(name)
+                b.setObjectName('mainMenuButton')
+                col = self._menu_colors.get(i)
+                if col:
+                    b.setStyleSheet(
+                        f"QPushButton#mainMenuButton{{background:{col};color:#fff;font-weight:bold;}} "
+                        f"QPushButton#mainMenuButton:checked{{border:2px solid #fff;}}"
+                    )
+                b.setCheckable(True)
+                b.clicked.connect(lambda _, ix=i: self._on_main_menu_clicked(ix))
+                layout.addWidget(b)
+                self._main_menu_buttons.append(b)
+                self._menu_children[i] = children
+            layout.addStretch()
+            if self._main_menu_buttons:
+                self._main_menu_buttons[0].setChecked(True)
+                self._populate_submenu(0)
+            self.log_bilingual('รีเฟรชเมนูหลักสำเร็จ', 'Rebuilt main menu successfully')
+        except Exception as e:
+            try:
+                self.log_bilingual(f'รีเฟรชเมนูล้มเหลว: {e}', f'Failed to rebuild menu: {e}')
+            except Exception:
+                pass
 
     def fmk_extract_wrapper(self):
         # Call fw-manager.sh extract <firmware> if available; stream logs into UI
@@ -1323,9 +2503,9 @@ class MainWindow(QMainWindow):
             return
         cmd = [fw_mgr, 'extract', self.fw_path]
         runner = FMKRunner(cmd, cwd=project_root)
-        runner.log.connect(self.log)
-        runner.error.connect(lambda e: self.log(f'FMK runner error: {e}'))
-        runner.finished.connect(lambda rc: self.log(f'FMK extract finished (rc={rc})'))
+        runner.log.connect(lambda m: self.thread_log.emit(m))
+        runner.error.connect(lambda e: self.thread_log.emit(f'FMK runner error: {e}'))
+        runner.finished.connect(lambda rc: self.thread_log.emit(f'FMK extract finished (rc={rc})'))
         runner.start(); self._register_thread(runner)
 
     def fmk_build_wrapper(self):
@@ -1340,9 +2520,9 @@ class MainWindow(QMainWindow):
             return
         cmd = [fw_mgr, 'install']
         runner = FMKRunner(cmd, cwd=project_root)
-        runner.log.connect(self.log)
-        runner.error.connect(lambda e: self.log(f'FMK runner error: {e}'))
-        runner.finished.connect(lambda rc: self.log(f'FMK install finished (rc={rc})'))
+        runner.log.connect(lambda m: self.thread_log.emit(m))
+        runner.error.connect(lambda e: self.thread_log.emit(f'FMK runner error: {e}'))
+        runner.finished.connect(lambda rc: self.thread_log.emit(f'FMK install finished (rc={rc})'))
         runner.start(); self._register_thread(runner)
 
     def _on_sidebar_changed(self, cur_item):
@@ -1380,21 +2560,50 @@ class MainWindow(QMainWindow):
         os.makedirs(self.output_dir, exist_ok=True)
 
         if action == 'boot_delay':
-            # PySide6 getInt signature: (parent, title, label, value=0, min=-2147483647, max=2147483647, step=1)
-            val, ok = QInputDialog.getInt(self, 'Boot Delay', 'New boot delay (seconds):', 5, 0, 600, 1)
+            # Step 1: ask new value
+            val, ok = QInputDialog.getInt(self, 'Boot Delay', 'New boot delay (seconds):', 3, 0, 600, 1)
             if not ok:
                 self.log('Boot delay patch cancelled')
                 return
+            # Step 2: gather env candidates (v1+v2) for optional env-level patch
+            env_candidates = self._collect_env_candidates()
+            chosen_env = None
+            if env_candidates:
+                chosen_env = self._select_env_block_dialog(env_candidates)
+            # Step 3: decide patch strategy
             outp = os.path.join(self.output_dir, os.path.basename(fw).replace('.bin','') + f'_patched_bootdelay.bin')
-            okc, msg = core_patch_boot_delay(fw, None, val, outp, lambda m: self.log(m))
+            if chosen_env:
+                # patch inside selected environment block (preferred)
+                try:
+                    off = chosen_env['offset']; size = chosen_env['size']
+                    okc, msg = patch_uboot_env_vars(fw, outp, off, size, {'bootdelay': val}, lambda m: self.thread_log.emit(m))
+                    if okc:
+                        self.log(f'[UBOOT] bootdelay -> {val} in env @0x{off:X} size=0x{size:X} -> {outp}')
+                        return
+                    else:
+                        self.log(f'[UBOOT] env patch failed ({msg}), fallback raw method')
+                except Exception as e:
+                    self.log(f'[UBOOT] env patch exception: {e}; falling back')
+            # Fallback: generic core patch (may patch raw byte or best env automatically)
+            okc, msg = core_patch_boot_delay(fw, None, val, outp, lambda m: self.thread_log.emit(m))
             if okc:
                 self.log(f'Boot delay patched -> {outp}')
             else:
                 self.log(f'Boot delay patch failed: {msg}')
 
         elif action == 'serial':
+            # Ask user to pick tty port (AI-assisted detection of candidates)
+            candidates = self._scan_serial_candidates()
+            forced = None
+            if candidates:
+                try:
+                    item, ok = QInputDialog.getItem(self, 'Select Serial Port', 'เลือกพอร์ตอนุกรม / Serial port:', candidates, 0, False)
+                    if ok and item:
+                        forced = item.split()[0]
+                except Exception as e:
+                    self.log(f'[SERIAL] port pick cancelled/failed: {e}')
             outp = os.path.join(self.output_dir, os.path.basename(fw).replace('.bin','') + f'_patched_serial.bin')
-            okc, msg = core_patch_rootfs_shell_serial(fw, None, outp, lambda m: self.log(m))
+            okc, msg = core_patch_rootfs_shell_serial(fw, None, outp, lambda m: self.thread_log.emit(m), forced_port=forced)
             if okc:
                 self.log(f'Serial patch -> {outp}')
             else:
@@ -1402,7 +2611,7 @@ class MainWindow(QMainWindow):
 
         elif action == 'network':
             outp = os.path.join(self.output_dir, os.path.basename(fw).replace('.bin','') + f'_patched_network.bin')
-            okc, msg = core_patch_rootfs_network(fw, None, outp, lambda m: self.log(m))
+            okc, msg = core_patch_rootfs_network(fw, None, outp, lambda m: self.thread_log.emit(m))
             if okc:
                 self.log(f'Network patch -> {outp}')
             else:
@@ -1415,6 +2624,66 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Info', 'Applied serial and network patches (files in output/)')
         else:
             self.log(f'Unknown quick patch action: {action}')
+
+    # --- U-Boot env selection helpers ---
+    def _collect_env_candidates(self):
+        """Return combined list of environment block candidates (v1 + v2) with de-duplication.
+        Honors the 'keep CRC mismatch' toggle when present.
+        """
+        try:
+            keep_mismatch = getattr(self, 'cfg_keep_crc_mismatch', True)
+            v1 = scan_uboot_env(self.fw_path, deep=True) if getattr(self, 'fw_path', None) else []
+            v2 = scan_uboot_env_v2(self.fw_path, deep=True, keep_crc_mismatch=keep_mismatch) if getattr(self, 'fw_path', None) else []
+            by_off = {}
+            for e in (v1 + v2):
+                if not e: continue
+                off = e.get('offset'); size = e.get('size')
+                if off is None or size is None: continue
+                key = (off, size)
+                # choose higher score or prefer valid CRC
+                existing = by_off.get(key)
+                if (existing is None or (not existing.get('valid') and e.get('valid')) or (e.get('score',0) > existing.get('score',0))):
+                    by_off[key] = e
+            out = list(by_off.values())
+            out.sort(key=lambda r: (- (1 if r.get('valid') else 0), -r.get('score',0), r.get('offset')))
+            return out
+        except Exception as e:
+            self.log(f'[UBOOT] collect env candidates error: {e}')
+            return []
+
+    def _select_env_block_dialog(self, candidates):
+        """Show a dialog letting user choose an env block or cancel.
+        Returns chosen candidate dict or None.
+        """
+        try:
+            from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QListWidget, QListWidgetItem, QDialogButtonBox
+            dlg = QDialog(self)
+            dlg.setWindowTitle('Select U-Boot Environment Block')
+            layout = QVBoxLayout(dlg)
+            layout.addWidget(QLabel('เลือกบล็อค environment ที่จะ patch bootdelay:\nSelect environment block to patch bootdelay:'))
+            lst = QListWidget(); lst.setSelectionMode(QListWidget.SingleSelection)
+            for c in candidates:
+                off = c.get('offset'); size = c.get('size'); valid = c.get('valid'); bd = c.get('bootdelay')
+                crc = c.get('crc'); calc = c.get('crc_calc')
+                txt = f"off=0x{off:X} size=0x{size:X} bootdelay={bd or '-'} {'VALID' if valid else 'BADCRC'} score={c.get('score',0):.1f} ({crc}->{calc})"
+                it = QListWidgetItem(txt)
+                it.setData(Qt.UserRole, c)
+                # subtle coloring for invalid CRC
+                if not valid:
+                    it.setForeground(Qt.gray)
+                lst.addItem(it)
+            if lst.count():
+                lst.setCurrentRow(0)
+            layout.addWidget(lst)
+            bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            layout.addWidget(bb)
+            bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+            if dlg.exec() == QDialog.Accepted and lst.currentItem():
+                return lst.currentItem().data(Qt.UserRole)
+            return None
+        except Exception as e:
+            self.log(f'[UBOOT] env select dialog error: {e}')
+            return None
 
     def multi_squash_dryrun(self):
         if not self.fw_path:
@@ -1437,11 +2706,13 @@ class MainWindow(QMainWindow):
         fw = self.fw_path
         out_dir = self.output_dir
         self.log(f'Running multi-squash apply on {fw} -> {out_dir} (destructive={allow_destructive})')
+        # start worker in background and ensure signals post to main thread via thread_log
         worker = MultiSquashWorker(fw, out_dir, allow_destructive)
-        worker.log.connect(self.log)
-        worker.error.connect(lambda e: self.log(f'Pipeline error: {e}'))
+        worker.log.connect(lambda m: self.thread_log.emit(m))
+        worker.error.connect(lambda e: self.thread_log.emit(f'Pipeline error: {e}'))
         worker.finished_ok.connect(self._on_multisquash_finished)
-        worker.start(); self._register_thread(worker)
+        worker.start()
+        self._register_thread(worker)
 
     def _on_multisquash_finished(self, out_fw_path: str):
         """Slot: run post-processing (checksums, gzip, signature, diffs, metadata) in the main thread."""
@@ -1514,7 +2785,7 @@ class MainWindow(QMainWindow):
             meta = {
                 'original': os.path.basename(self.fw_path),
                 'patched': os.path.basename(out_fw_path),
-                'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
+                'timestamp': datetime.datetime.now(datetime.UTC).isoformat(),
                 'parts': None,
                 'orig_sha256': orig_sha if 'orig_sha' in locals() else None,
                 'patched_sha256': patched_sha if 'patched_sha' in locals() else None,
@@ -1534,14 +2805,26 @@ class MainWindow(QMainWindow):
         tools = ['unsquashfs', 'mksquashfs', 'binwalk', 'jefferson', 'gpg']
         for t in tools:
             p = shutil.which(t)
-            self.log(f'[TOOLS] {t}: {p or "NOT FOUND"}')
+            try:
+                # prefer emitting via thread-safe signal so this can be called from background threads
+                self.thread_log.emit(f'[TOOLS] {t}: {p or "NOT FOUND"}')
+            except Exception:
+                # fallback to direct log if signal is not available
+                try: self.log(f'[TOOLS] {t}: {p or "NOT FOUND"}')
+                except Exception: pass
 
     def auto_detect_rootfs(self):
         try:
             parts = multisquash.detect_squashfs(self.fw_path) if self.fw_path else []
-            self.log(f'[AUTO] detect_squashfs -> {len(parts)} parts')
+            try:
+                self.thread_log.emit(f'[AUTO] detect_squashfs -> {len(parts)} parts')
+            except Exception:
+                self.log(f'[AUTO] detect_squashfs -> {len(parts)} parts')
         except Exception as e:
-            self.log(f'[AUTO] detect_squashfs error: {e}')
+            try:
+                self.thread_log.emit(f'[AUTO] detect_squashfs error: {e}')
+            except Exception:
+                self.log(f'[AUTO] detect_squashfs error: {e}')
 
     def show_fw_info(self):
         if not getattr(self, 'fw_path', None):
@@ -1562,23 +2845,125 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.log(f'[AI] analyze error: {e}')
 
+    def ai_orchestrator(self, manual: bool=False):
+        """Analysis orchestrator (manual mode, no auto patching)."""
+        try:
+            self.thread_log.emit('[AI] Orchestrator started')
+            if not getattr(self, 'fw_path', None):
+                self.thread_log.emit('[AI] no firmware selected')
+                return
+
+            # 1) basic tool checks
+            try:
+                # check_external_tools logs via self.log which is safe when called from main thread
+                # but here we're in background thread so call thread_log.emit where needed
+                self.check_external_tools()
+            except Exception as e:
+                self.thread_log.emit(f'[AI] check_external_tools error: {e}')
+
+            # 2) deep scan
+            try:
+                self.thread_log.emit('[AI] running deep scan...')
+                self.run_deep_scan()
+            except Exception as e:
+                self.thread_log.emit(f'[AI] deep scan error: {e}')
+
+            # 3) detect rootfs parts and u-boot env
+            try:
+                self.auto_detect_rootfs()
+                self.open_uboot_env_editor()
+            except Exception as e:
+                self.thread_log.emit(f'[AI] rootfs/uboot detection error: {e}')
+
+            # 4) skip auto patch probing in manual analysis mode
+
+            # 5) collect detailed findings and write ai.summary
+            try:
+                findings = {}
+                findings['firmware'] = os.path.basename(self.fw_path)
+                findings['timestamp'] = datetime.datetime.now(datetime.UTC).isoformat()
+                # rootfs parts
+                try:
+                    parts = multisquash.detect_squashfs(self.fw_path)
+                    findings['parts'] = [{'offset': p.offset, 'size': p.size} for p in parts] if parts else []
+                except Exception:
+                    findings['parts'] = []
+                # u-boot env analysis
+                try:
+                    env_blocks = scan_uboot_env(self.fw_path, deep=True)
+                    findings['uboot_envs'] = env_blocks
+                    findings['uboot_findings'] = analyze_bootloader_env(env_blocks)
+                except Exception:
+                    findings['uboot_envs'] = []
+                    findings['uboot_findings'] = ['scan error']
+                # bootdelay raw byte if present
+                try:
+                    bd = read_boot_delay_byte(self.fw_path)
+                    findings['bootdelay_byte'] = bd
+                except Exception:
+                    findings['bootdelay_byte'] = None
+                # suggested patches
+                suggestions = []
+                if findings.get('parts'):
+                    suggestions.append({'action': 'patch_serial', 'reason': 'rootfs parts detected'})
+                    suggestions.append({'action': 'patch_network', 'reason': 'rootfs parts detected'})
+                else:
+                    suggestions.append({'action': 'patch_serial', 'reason': 'no rootfs parts; binwalk fallback may be required'})
+                if findings.get('bootdelay_byte') is not None:
+                    suggestions.insert(0, {'action': 'patch_boot_delay', 'reason': 'bootdelay byte found at 0x100'})
+                findings['suggested_patches'] = suggestions
+
+                meta_path = os.path.join(self.output_dir, os.path.basename(self.fw_path) + '.ai.summary.json')
+                with open(meta_path, 'w') as mf:
+                    json.dump(findings, mf, indent=2)
+                self.thread_log.emit(f'[AI] wrote summary: {meta_path}')
+
+                # Update dashboard UI (schedule on main thread if possible)
+                try:
+                    summary_text = json.dumps(findings, indent=2, ensure_ascii=False)
+                    def _ui_update():
+                        try:
+                            if hasattr(self, 'ai_summary_view'):
+                                self.ai_summary_view.setPlainText(summary_text)
+                            if hasattr(self, 'apply_suggested_btn'):
+                                self.apply_suggested_btn.setEnabled(bool(findings.get('suggested_patches')))
+                        except Exception:
+                            pass
+                    try:
+                        from PySide6.QtCore import QTimer
+                        QTimer.singleShot(0, _ui_update)
+                    except Exception:
+                        _ui_update()
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    self.thread_log.emit(f'[AI] compose summary failed: {e}')
+                except Exception:
+                    self.log(f'[AI] compose summary failed: {e}')
+
+            self.thread_log.emit('[AI] Orchestrator finished')
+        except Exception as e:
+            try: self.thread_log.emit(f'[AI] orchestrator error: {e}')
+            except Exception: pass
+
     def run_deep_scan(self):
         try:
             res = deep_scan_file(self.fw_path) if getattr(self, 'fw_path', None) else None
-            self.log(f'[DEEP] deep_scan result: {str(bool(res))}')
+            self.thread_log.emit(f'[DEEP] deep_scan result: {str(bool(res))}')
         except Exception as e:
-            self.log(f'[DEEP] deep_scan error: {e}')
+            self.thread_log.emit(f'[DEEP] deep_scan error: {e}')
 
     def open_uboot_env_editor(self):
         # non-interactive: just run scan_uboot_env and log top candidate
         try:
             envs = scan_uboot_env(self.fw_path) if getattr(self, 'fw_path', None) else []
             if envs:
-                self.log(f'[UBOOT] found {len(envs)} env blocks; best @{hex(envs[0]["offset"])}')
+                self.thread_log.emit(f'[UBOOT] found {len(envs)} env blocks; best @{hex(envs[0]["offset"])}')
             else:
-                self.log('[UBOOT] no env blocks found')
+                self.thread_log.emit('[UBOOT] no env blocks found')
         except Exception as e:
-            self.log(f'[UBOOT] open editor error: {e}')
+            self.thread_log.emit(f'[UBOOT] open editor error: {e}')
 
     def clear_logs(self):
         try:
@@ -1590,26 +2975,42 @@ class MainWindow(QMainWindow):
     # Patch action wrappers expected by auto-run
     def do_patch_boot_delay(self):
         out = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','') + '_patched_auto_boot.bin')
-        ok, msg = core_patch_boot_delay(self.fw_path, None, 0, out, lambda m: self.log(m))
-        self.log(f'[PATCH_BOOT] result: {ok} {msg}')
+        ok, msg = core_patch_boot_delay(self.fw_path, None, 0, out, lambda m: self.thread_log.emit(m))
+        try:
+            self.thread_log.emit(f'[PATCH_BOOT] result: {ok} {msg}')
+        except Exception:
+            try: self.log(f'[PATCH_BOOT] result: {ok} {msg}')
+            except Exception: pass
 
     def do_patch_serial(self):
         out = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','') + '_patched_auto_serial.bin')
-        ok, msg = core_patch_rootfs_shell_serial(self.fw_path, None, out, lambda m: self.log(m))
-        self.log(f'[PATCH_SERIAL] result: {ok} {msg}')
+        ok, msg = core_patch_rootfs_shell_serial(self.fw_path, None, out, lambda m: self.thread_log.emit(m))
+        try:
+            self.thread_log.emit(f'[PATCH_SERIAL] result: {ok} {msg}')
+        except Exception:
+            try: self.log(f'[PATCH_SERIAL] result: {ok} {msg}')
+            except Exception: pass
 
     def do_patch_network(self):
         out = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','') + '_patched_auto_net.bin')
-        ok, msg = core_patch_rootfs_network(self.fw_path, None, out, lambda m: self.log(m))
-        self.log(f'[PATCH_NET] result: {ok} {msg}')
+        ok, msg = core_patch_rootfs_network(self.fw_path, None, out, lambda m: self.thread_log.emit(m))
+        try:
+            self.thread_log.emit(f'[PATCH_NET] result: {ok} {msg}')
+        except Exception:
+            try: self.log(f'[PATCH_NET] result: {ok} {msg}')
+            except Exception: pass
 
     def do_patch_all(self):
         self.do_patch_serial(); self.do_patch_network(); self.do_patch_boot_delay()
 
     def do_patch_rootpw(self):
         out = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','') + '_patched_auto_rootpw.bin')
-        ok, msg = core_patch_root_password(self.fw_path, None, 'root', out, lambda m: self.log(m))
-        self.log(f'[PATCH_ROOTPW] result: {ok} {msg}')
+        ok, msg = core_patch_root_password(self.fw_path, None, 'root', out, lambda m: self.thread_log.emit(m))
+        try:
+            self.thread_log.emit(f'[PATCH_ROOTPW] result: {ok} {msg}')
+        except Exception:
+            try: self.log(f'[PATCH_ROOTPW] result: {ok} {msg}')
+            except Exception: pass
 
     def auto_run_mode(self, mode='A'):
         """Run the tools/auto_run_on_file.py in a background thread using FMKRunner.
@@ -1626,10 +3027,199 @@ class MainWindow(QMainWindow):
             return
         cmd = [python_exec, script, self.fw_path, mode, 'auto']
         runner = FMKRunner(cmd, cwd=os.path.abspath(os.path.dirname(__file__)))
-        runner.log.connect(self.log)
-        runner.error.connect(lambda e: self.log(f'Auto-run error: {e}'))
-        runner.finished.connect(lambda rc: self.log(f'Auto-run finished (rc={rc})'))
-        runner.start(); self._register_thread(runner)
+        runner.log.connect(lambda m: self.thread_log.emit(m))
+        runner.error.connect(lambda e: self.thread_log.emit(f'Auto-run error: {e}'))
+        runner.finished.connect(lambda rc: self.thread_log.emit(f'Auto-run finished (rc={rc})'))
+        runner.start()
+        self._register_thread(runner)
+
+    # ---------- Automatic dependency preparation ----------
+    def _auto_prepare_env(self):
+        if os.path.exists(getattr(self, 'deps_flag', '/tmp/none')):
+            try: self.thread_log.emit('[SETUP] deps flag already present (skip)')
+            except Exception: pass
+            return
+        try: self.thread_log.emit('[SETUP] Auto-preparing FMK dependencies...')
+        except Exception: pass
+        try:
+            self.install_fmk_deps(automatic=True)
+        except Exception as e:
+            try: self.thread_log.emit(f'[SETUP] auto prepare failed: {e}')
+            except Exception: pass
+
+    def install_fmk_deps(self, automatic: bool=False):
+        """ตรวจและติดตั้งเฉพาะ dependencies ที่ 'ยังไม่มี' (Debian/Ubuntu เท่านั้น).
+        หากระบบไม่ใช่ Debian/Ubuntu หรือไม่มี apt จะข้ามทันที.
+        ลำดับ:
+          1) ตรวจ core build / python runtime packages
+          2) ตรวจความพร้อมของเครื่องมือ filesystem (ผ่าน capability registry + which)
+          3) เลือก python3-venv เฉพาะ candidate version ตรง runtime
+          4) สร้างรายการที่ขาด -> apt install เฉพาะรายการนั้น
+          5) ถ้าไม่ขาดอะไร: log แล้วจบ
+        มี fallback ensurepip+virtualenv หากไม่มี python3-venv ที่ตรง
+        """
+        import sys, subprocess, shutil
+        if not shutil.which('apt') or not os.path.exists('/etc/debian_version'):
+            try: self.thread_log.emit('[FMK] ข้าม: ไม่มี apt หรือไม่ใช่ Debian/Ubuntu')
+            except Exception: pass
+            return
+        pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
+        core_build = [
+            'build-essential','git','zlib1g-dev','liblzma-dev','liblzo2-dev','libtool',
+            'automake','autoconf','unzip','gawk','wget','cpio'
+        ]
+        python_runtime = ['python3','python3-pip','python3-setuptools','python3-yaml','python3-pyqt5','python3-pyqt5.qtsvg']
+        def _pkg_installed(pkg):
+            try:
+                subprocess.check_output(['dpkg','-s',pkg], stderr=subprocess.DEVNULL)
+                return True
+            except Exception:
+                return False
+        missing = []
+        for pkg in core_build:
+            if not _pkg_installed(pkg): missing.append(pkg)
+        for pkg in python_runtime:
+            if not _pkg_installed(pkg): missing.append(pkg)
+        from tool_registry import get_candidates, CAP_SQUASHFS_EXTRACT, CAP_SQUASHFS_PACK, CAP_CRAMFS_EXTRACT, CAP_CRAMFS_PACK, CAP_JFFS2_PACK
+        if not get_candidates(CAP_SQUASHFS_EXTRACT) or not get_candidates(CAP_SQUASHFS_PACK):
+            if not _pkg_installed('squashfs-tools'): missing.append('squashfs-tools')
+        if not get_candidates(CAP_CRAMFS_EXTRACT) or not get_candidates(CAP_CRAMFS_PACK):
+            if not _pkg_installed('cramfsprogs'): missing.append('cramfsprogs')
+        if not get_candidates(CAP_JFFS2_PACK):
+            if not _pkg_installed('mtd-utils'): missing.append('mtd-utils')
+        if not shutil.which('binwalk') and not _pkg_installed('binwalk'):
+            missing.append('binwalk')
+        # python3-venv candidate
+        chosen_venv = None
+        def _pkg_info(pkg):
+            try: return subprocess.check_output(['apt-cache','policy',pkg], text=True, stderr=subprocess.DEVNULL)
+            except Exception: return ''
+        info = _pkg_info('python3-venv')
+        if info and 'Candidate:' in info and 'Candidate: (none)' not in info:
+            for line in info.splitlines():
+                if 'Candidate:' in line:
+                    cand_ver = line.split('Candidate:',1)[1].strip()
+                    if pyver in cand_ver and not _pkg_installed('python3-venv'):
+                        chosen_venv = 'python3-venv'
+                    elif pyver not in cand_ver:
+                        self.thread_log.emit(f'[FMK] ข้าม python3-venv (candidate {cand_ver} != {pyver})')
+                    break
+        if chosen_venv: missing.append(chosen_venv)
+        # normalize unique
+        seen=set(); uniq=[]
+        for p in missing:
+            if p not in seen:
+                seen.add(p); uniq.append(p)
+        missing = uniq
+        if not missing:
+            try: self.thread_log.emit('[FMK] ✅ ระบบมี dependencies ครบแล้ว (ไม่มีอะไรต้องติดตั้ง)')
+            except Exception: pass
+            return
+        self.thread_log.emit('[FMK] รายการที่ต้องติดตั้ง: ' + ' '.join(missing))
+        apt_update = ['apt','update']
+        apt_install = ['apt','install','-y'] + missing
+        self.thread_log.emit('[FMK] เริ่มติดตั้งอัตโนมัติ' if automatic else '[FMK] เริ่มติดตั้ง ...')
+        flag = getattr(self, 'deps_flag', os.path.expanduser('~/.local/share/firmware_toolkit/deps_installed'))
+
+        def _mark_done():
+            try:
+                with open(flag,'w') as f:
+                    f.write(datetime.datetime.now(datetime.UTC).isoformat()+'\n')
+                self.thread_log.emit('[FMK] Dependencies installed (flag written)')
+            except Exception as e:
+                self.thread_log.emit(f'[FMK] write flag failed: {e}')
+
+        use_fallback = chosen_venv is None
+        def _run_and_stream(cmd, use_sudo=False, password=None):
+            try:
+                if use_sudo:
+                    proc = subprocess.Popen(['sudo','-S','-p','']+cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    if password is not None:
+                        try: proc.stdin.write(password+'\n'); proc.stdin.flush()
+                        except Exception: pass
+                else:
+                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                if proc.stdout:
+                    for line in iter(proc.stdout.readline, ''):
+                        if not line: break
+                        try: self.thread_log.emit(line.rstrip())
+                        except Exception: print(line.rstrip())
+                proc.wait(); return proc.returncode == 0, proc.returncode
+            except Exception as e:
+                try: self.thread_log.emit(f'[FMK] command error {cmd}: {e}')
+                except Exception: pass
+                return False, str(e)
+        def _mark_done():
+            try:
+                with open(flag,'w') as f: f.write(datetime.datetime.now(datetime.UTC).isoformat()+'\n')
+                self.thread_log.emit('[FMK] Dependencies installed (flag written)')
+            except Exception as e:
+                self.thread_log.emit(f'[FMK] write flag failed: {e}')
+        def _venv_fallback():
+            if not use_fallback: return
+            self.thread_log.emit('[FMK] fallback: ensurepip + virtualenv (no apt venv)')
+            try:
+                p = subprocess.run([sys.executable,'-m','ensurepip','--upgrade'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                self.thread_log.emit(f'[FMK] ensurepip rc={p.returncode}')
+            except Exception as e:
+                self.thread_log.emit(f'[FMK] ensurepip error: {e}')
+            try:
+                p = subprocess.run([sys.executable,'-m','pip','install','--upgrade','pip','virtualenv'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                self.thread_log.emit(f'[FMK] pip virtualenv rc={p.returncode}')
+            except Exception as e:
+                self.thread_log.emit(f'[FMK] virtualenv install error: {e}')
+
+        if os.geteuid() == 0:
+            def _root_flow():
+                ok,_ = _run_and_stream(apt_update)
+                if not ok:
+                    self.thread_log.emit('[FMK] apt update failed (root)'); return
+                ok,_ = _run_and_stream(apt_install)
+                if ok:
+                    self.thread_log.emit('[FMK] ติดตั้งเสร็จสมบูรณ์')
+                    _venv_fallback(); _mark_done()
+                    try: self._update_install_deps_visibility()
+                    except Exception: pass
+                else:
+                    self.thread_log.emit('[FMK] apt install failed (root)')
+            threading.Thread(target=_root_flow, daemon=True).start(); return
+
+        # Non-root path
+        if not automatic:
+            try:
+                ans = QMessageBox.question(self,'FMK dependencies','Install FMK dependencies now?', QMessageBox.Yes|QMessageBox.No)
+            except Exception:
+                ans = QMessageBox.No
+            if ans != QMessageBox.Yes:
+                self.thread_log.emit('[FMK] User skipped install (manual commands below)')
+                self.thread_log.emit('  '+' '.join(apt_update))
+                self.thread_log.emit('  '+' '.join(apt_install))
+                return
+
+        def _sudo_flow():
+            # Best-effort sudo execution (avoid interactive password if no sudo)
+            need_pw = shutil.which('sudo') is not None
+            password = None
+            if need_pw:
+                try:
+                    pwd, ok = QInputDialog.getText(self,'Sudo password','Enter sudo password:', QLineEdit.Password)
+                    if not ok:
+                        self.thread_log.emit('[FMK] sudo password cancelled'); return
+                    password = pwd
+                except Exception:
+                    password = None
+            ok,_ = _run_and_stream(apt_update, use_sudo=need_pw, password=password)
+            if not ok:
+                self.thread_log.emit('[FMK] apt update failed (sudo)'); return
+            ok,_ = _run_and_stream(apt_install, use_sudo=need_pw, password=password)
+            if ok:
+                self.thread_log.emit('[FMK] ติดตั้งเสร็จ (sudo)')
+                _venv_fallback(); _mark_done()
+                try: self._update_install_deps_visibility()
+                except Exception: pass
+            else:
+                self.thread_log.emit('[FMK] apt install failed (sudo)')
+        threading.Thread(target=_sudo_flow, daemon=True).start()
         
     # ---------------- Thread lifecycle helpers ----------------
     def _register_thread(self, thr):
@@ -1681,7 +3271,7 @@ class MainWindow(QMainWindow):
 
     def archive_outputs(self):
         try:
-            ts = datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+            ts = datetime.datetime.now(datetime.UTC).strftime('%Y%m%dT%H%M%SZ')
             archdir = os.path.join(self.output_dir, f'archive_{ts}')
             os.makedirs(archdir, exist_ok=True)
             # copy relevant files
@@ -1793,25 +3383,25 @@ class MainWindow(QMainWindow):
         # Boot delay
         if actions.get('boot_delay'):
             out = os.path.join(self.output_dir, base + '_sel_boot.bin')
-            ok, msg = core_patch_boot_delay(cur, None, actions.get('boot_delay_value',1), out, lambda m: self.log(m))
-            if ok: cur = out; self.log('[SELECTIVE] boot_delay applied');
-            else: self.log(f'[SELECTIVE] boot_delay failed: {msg}')
+            ok, msg = core_patch_boot_delay(cur, None, actions.get('boot_delay_value',1), out, lambda m: self.thread_log.emit(m))
+            if ok: cur = out; self.thread_log.emit('[SELECTIVE] boot_delay applied');
+            else: self.thread_log.emit(f'[SELECTIVE] boot_delay failed: {msg}')
         if actions.get('serial_shell'):
             out = os.path.join(self.output_dir, base + '_sel_serial.bin')
-            ok, msg = core_patch_rootfs_shell_serial(cur, None, out, lambda m: self.log(m))
-            if ok: cur = out; self.log('[SELECTIVE] serial applied')
-            else: self.log(f'[SELECTIVE] serial failed: {msg}')
+            ok, msg = core_patch_rootfs_shell_serial(cur, None, out, lambda m: self.thread_log.emit(m))
+            if ok: cur = out; self.thread_log.emit('[SELECTIVE] serial applied')
+            else: self.thread_log.emit(f'[SELECTIVE] serial failed: {msg}')
         if actions.get('network_services'):
             out = os.path.join(self.output_dir, base + '_sel_net.bin')
-            ok, msg = core_patch_rootfs_network(cur, None, out, lambda m: self.log(m))
-            if ok: cur = out; self.log('[SELECTIVE] network applied')
-            else: self.log(f'[SELECTIVE] network failed: {msg}')
+            ok, msg = core_patch_rootfs_network(cur, None, out, lambda m: self.thread_log.emit(m))
+            if ok: cur = out; self.thread_log.emit('[SELECTIVE] network applied')
+            else: self.thread_log.emit(f'[SELECTIVE] network failed: {msg}')
         if actions.get('root_password'):
             out = os.path.join(self.output_dir, base + '_sel_rootpw.bin')
             pw = actions.get('root_password_value','admin1234')
-            ok, msg = core_patch_root_password(cur, None, pw, out, lambda m: self.log(m))
-            if ok: cur = out; self.log('[SELECTIVE] root password applied')
-            else: self.log(f'[SELECTIVE] root password failed: {msg}')
+            ok, msg = core_patch_root_password(cur, None, pw, out, lambda m: self.thread_log.emit(m))
+            if ok: cur = out; self.thread_log.emit('[SELECTIVE] root password applied')
+            else: self.thread_log.emit(f'[SELECTIVE] root password failed: {msg}')
         # Update current firmware path if at least one patch succeeded
         if cur != self.fw_path:
             self.fw_path = cur
@@ -1830,7 +3420,7 @@ class MainWindow(QMainWindow):
 
     def _ensure_unified_path(self):
         # Create a copy for editing operations; keep original safe
-        ts = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
+        ts = datetime.datetime.now(datetime.UTC).strftime('%Y%m%d%H%M%S')
         out = os.path.join(self.output_dir, f'unified_{ts}.bin')
         try:
             shutil.copy2(self.fw_path, out)
@@ -1870,7 +3460,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self,'Export','Select firmware first'); return
         profile = {
             'firmware': os.path.basename(self.fw_path),
-            'timestamp': datetime.datetime.utcnow().isoformat()+'Z',
+            'timestamp': datetime.datetime.now(datetime.UTC).isoformat(),
             'available_outputs': [f for f in os.listdir(self.output_dir) if f.endswith('.bin')],
         }
         path, _ = QFileDialog.getSaveFileName(self,'Export Patch Profile','patch_profile.json','JSON (*.json)')
@@ -1890,6 +3480,79 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self,'Import', f"Loaded profile: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.critical(self,'Import', f'Error: {e}')
+
+    def apply_suggested_pipeline(self):
+        """Read ai.summary and apply suggested patches sequentially after confirmation.
+        Runs in a background thread to avoid blocking the UI.
+        """
+        if not getattr(self, 'fw_path', None):
+            QMessageBox.information(self, 'Apply Pipeline', 'Please select a firmware first')
+            return
+        summary_path = os.path.join(self.output_dir, os.path.basename(self.fw_path) + '.ai.summary.json')
+        if not os.path.exists(summary_path):
+            QMessageBox.information(self, 'Apply Pipeline', 'AI summary not found. Run scan first by selecting firmware.')
+            return
+        try:
+            data = json.load(open(summary_path, 'r', encoding='utf-8'))
+        except Exception as e:
+            QMessageBox.critical(self, 'Apply Pipeline', f'Failed to load summary: {e}')
+            return
+        suggestions = data.get('suggested_patches', [])
+        if not suggestions:
+            QMessageBox.information(self, 'Apply Pipeline', 'No suggested patches in summary')
+            return
+        # Show preview dialog so user can pick which suggested actions to apply
+        try:
+            dlg = SuggestedPipelinePreviewDialog(self, suggestions)
+            if dlg.exec() != QDialog.Accepted:
+                self.log('[AI] Apply suggested pipeline cancelled by user (preview)')
+                return
+            chosen = dlg.get_chosen()
+            if not chosen:
+                self.log('[AI] No suggestions chosen; aborting')
+                return
+            # start worker with chosen actions
+            worker = ApplyPipelineWorker(self.fw_path, chosen, self.output_dir)
+            # UI state
+            self.apply_progress.setValue(0); self.apply_progress.setVisible(True)
+            try:
+                self.apply_suggested_btn.setEnabled(False)
+                self.apply_suggested_btn.setText('Applying...')
+            except Exception:
+                pass
+            self.cancel_apply_btn.setEnabled(True)
+            self._active_apply_worker = worker
+
+            # connect signals
+            worker.log.connect(lambda m: self.thread_log.emit(m))
+            worker.progress.connect(lambda p: self.apply_progress.setValue(p))
+            def _on_finished(applied):
+                try:
+                    # update fw_path heuristically if boot delay was applied
+                    if applied and 'patch_boot_delay' in applied and os.path.exists(os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','') + '_ai_bootdelay.bin')):
+                        self.fw_path = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','') + '_ai_bootdelay.bin')
+                    self.log('[AI] Pipeline finished: '+(', '.join(applied) if applied else 'no actions'))
+                    if hasattr(self, 'ai_summary_view'):
+                        self.ai_summary_view.append('\n[AI] Pipeline applied: '+(', '.join(applied) if applied else 'none'))
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        self.apply_progress.setVisible(False)
+                        try:
+                            self.apply_suggested_btn.setEnabled(True)
+                            self.apply_suggested_btn.setText('Apply suggested pipeline')
+                        except Exception:
+                            pass
+                        self.cancel_apply_btn.setEnabled(False)
+                        self._active_apply_worker = None
+                    except Exception:
+                        pass
+
+            worker.finished.connect(_on_finished)
+            worker.start(); self._register_thread(worker)
+        except Exception as e:
+            self.log(f'[AI] apply pipeline start failed: {e}')
 
 # ---------------- Helper Implementations (previously missing) ----------------
 def preferred_tool(name: str):
@@ -1929,8 +3592,29 @@ def auto_detect_tty_port_from_context(fw_path, rootfs_part, unsquashfs_dir, log_
 
 def main():
     """Application entry point for launching the PySide6 GUI."""
+    # Set High DPI policy BEFORE QApplication creation (Task B)
+    try:
+        from PySide6.QtGui import QGuiApplication
+        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)  # type: ignore
+    except Exception:
+        pass
     # Avoid launching multiple instances if already running in certain automation contexts
     app = QApplication.instance() or QApplication(sys.argv)
+    # Load custom QSS style if present
+    try:
+        qss_path = os.path.join(os.path.dirname(__file__), 'styles.qss')
+        if os.path.exists(qss_path):
+            with open(qss_path, 'r', encoding='utf-8') as f:
+                app.setStyleSheet(f.read())
+    except Exception:
+        pass
+    # Set a sensible default font and size to match mock
+    try:
+        f = app.font()
+        f.setPointSize(12)
+        app.setFont(f)
+    except Exception:
+        pass
     win = MainWindow()
     # Provide a sensible default size if not restored by window manager
     try:
@@ -1939,11 +3623,7 @@ def main():
     except Exception:
         pass
     win.show()
-    # Basic high-DPI attribute (Qt6 usually auto, but enforce just in case)
-    try:
-        QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)  # type: ignore
-    except Exception:
-        pass
+    # (Policy already set before QApplication creation)
     sys.exit(app.exec())
 
 
