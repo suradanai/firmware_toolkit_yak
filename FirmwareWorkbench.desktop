@@ -1,16 +1,20 @@
 [Desktop Entry]
-Version=1.0
+Version=1.1
 Type=Application
-Name=Firmware Toolkit bY yak
-Name[th]=Firmware Toolkit bY yak
+Name=Firmware Toolkit by yak
+Name[th]=Firmware Toolkit by yak
 GenericName=Firmware Toolkit
 GenericName[th]=ชุดเครื่องมือเฟิร์มแวร์
 Comment=Firmware reverse, analysis, patch & AI toolkit
 Comment[th]=ชุดเครื่องมือสำหรับถอด วิเคราะห์ และแพตช์เฟิร์มแวร์ (พร้อม AI)
-Exec=/home/yakdev/Desktop/firmware-workbench/run-gui.sh
+# หมายเหตุ: เส้นทางมีช่องว่าง ต้อง escape ด้วย backslash ตามสเปค freedesktop
+Exec=/home/yakdev/Desktop/yakDEV\ Repository/firmware_toolkit_yak/run-gui.sh
+TryExec=/home/yakdev/Desktop/yakDEV\ Repository/firmware_toolkit_yak/run-gui.sh
+Path=/home/yakdev/Desktop/yakDEV\ Repository/firmware_toolkit_yak
 Icon=firmware_toolkit_yak
 Terminal=false
 Categories=Utility;Development;Security;IDE;
 StartupNotify=true
-StartupWMClass=Firmware Toolkit bY yak
+StartupWMClass=FirmwareToolkitYak
 X-GNOME-UsesNotifications=true
+Keywords=firmware;reverse;analysis;toolkit;yak;embedded;uboot;rootfs;
