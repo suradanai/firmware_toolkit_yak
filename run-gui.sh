@@ -71,8 +71,9 @@ trap 'ec=$?; echo "[FATAL] Exit rc=$ec line=$LINENO" >>"$LOG_FILE"' EXIT
 
 # ---------------- Configuration Defaults ----------------
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR=".venv"
-PYTHON="python"
+VENV_DIR=".venv"           # relative name inside project
+VENV_PATH="$PROJECT_ROOT/$VENV_DIR"
+PYTHON="python"            # initial preference (may be replaced by chooser)
 CREATE_VENV=1
 REINSTALL_REQS=0
 SKIP_DEPS=0
@@ -191,18 +192,39 @@ detect_gui_entry() {
   return 2
 }
 
+choose_python() {
+  # If user specified via --python keep it; else probe list for ensurepip
+  if [ "$PYTHON" != "python" ]; then
+    if "$PYTHON" -c 'import ensurepip' 2>/dev/null; then return 0; fi
+  fi
+  local cands=(python3 python3.12 python3.11 python3.10 python)
+  for c in "${cands[@]}"; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import ensurepip' 2>/dev/null; then
+      PYTHON="$c"; return 0
+    fi
+  done
+  # last resort: keep original; venv may fail later and we'll fallback
+  return 0
+}
+
 prepare_venv() {
-  if [ $CREATE_VENV -eq 0 ] && [ ! -d "$VENV_DIR" ]; then
-    err "Virtualenv '$VENV_DIR' missing and --no-create-venv was given."
+  choose_python
+  if [ $CREATE_VENV -eq 0 ] && [ ! -d "$VENV_PATH" ]; then
+    err "Virtualenv '$VENV_PATH' missing and --no-create-venv was given."
   fi
-  if [ ! -d "$VENV_DIR" ]; then
-    log "Creating virtualenv: $VENV_DIR (python=$PYTHON)"
-    run_cmd "$PYTHON -m venv \"$VENV_DIR\""
+  if [ ! -d "$VENV_PATH" ]; then
+    log "Creating virtualenv: $VENV_PATH (python=$PYTHON)"
+    if ! run_cmd "$PYTHON -m venv \"$VENV_PATH\""; then
+      log "[WARN] venv creation failed – will proceed without isolated env (system site packages)"
+      USE_GLOBAL_PY=1
+    fi
   else
-    log "Using existing virtualenv: $VENV_DIR"
+    log "Using existing virtualenv: $VENV_PATH"
   fi
-  # shellcheck disable=SC1090
-  source "$VENV_DIR/bin/activate"
+  if [ -z "${USE_GLOBAL_PY:-}" ]; then
+    # shellcheck disable=SC1090
+    source "$VENV_PATH/bin/activate" || log "[WARN] Unable to activate venv; continuing with global python."
+  fi
 }
 
 install_requirements() {
@@ -266,8 +288,8 @@ list_workspaces() {
 }
 
 build_gui_command() {
-  local python_exec="$PROJECT_ROOT/$VENV_DIR/bin/python"
-  [ -x "$python_exec" ] || python_exec="python"
+  local python_exec="$VENV_PATH/bin/python"
+  [ -x "$python_exec" ] || python_exec="$PYTHON"
 
   local args=""
   if [ -n "$WORKSPACE_ARG" ]; then

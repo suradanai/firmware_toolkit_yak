@@ -8,7 +8,7 @@ GenericName[th]=ชุดเครื่องมือเฟิร์มแว�
 Comment=Firmware reverse, analysis, patch & AI toolkit
 Comment[th]=ชุดเครื่องมือสำหรับถอด วิเคราะห์ และแพตช์เฟิร์มแวร์ (พร้อม AI)
 # NOTE: Path has space; safest is to invoke via bash -c and quote inside.
-Exec=bash -lc '"/home/yakdev/Desktop/yakDEV Repository/firmware_toolkit_yak/run-gui.sh"'
+Exec=bash -lc 'cd "/home/yakdev/Desktop/yakDEV Repository/firmware_toolkit_yak" && ./run-gui.sh'
 TryExec=/home/yakdev/Desktop/yakDEV\ Repository/firmware_toolkit_yak/run-gui.sh
 # Path omitted (script computes PROJECT_ROOT).
 Icon=firmware_toolkit_yak
