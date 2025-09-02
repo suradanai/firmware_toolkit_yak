@@ -3469,11 +3469,13 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self,'U-Boot','Select firmware first'); return
         try:
             from dialogs import UBootEnvEditorDialog
+            self.log('[UBOOT] เปิดหน้าแก้ไข environment')
             dlg = UBootEnvEditorDialog(self, lambda deep=False: scan_uboot_env(self.fw_path, deep=deep),
                                        lambda src,dst,off,size,updates: patch_uboot_env_vars(src,dst,off,size,updates, self.log))
             dlg.exec()
         except Exception as e:
             QMessageBox.critical(self,'U-Boot', f'Error: {e}')
+            self.log(f'[UBOOT] dialog open error: {e}')
 
     def _ensure_unified_path(self):
         # Create a copy for editing operations; keep original safe

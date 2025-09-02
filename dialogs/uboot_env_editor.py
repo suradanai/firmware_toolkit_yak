@@ -74,12 +74,23 @@ class UBootEnvEditorDialog(QDialog):
     # ----------------- Scanning -----------------
     def _rescan(self, initial: bool=False):
         deep = self.deep_box.isChecked()
+        parent = self.parent()
+        if hasattr(parent, 'log'):
+            parent.log(f"[UBOOT] เริ่มสแกน environment (deep={deep})")
         try:
             self.env_blocks = self.scan_func(deep=deep) or []
         except Exception as e:
             self.env_blocks = []
+            if hasattr(parent, 'log'):
+                parent.log(f"[UBOOT] สแกนล้มเหลว: {e}")
             QMessageBox.warning(self, "Scan", f"ล้มเหลว: {e}")
         self._populate_blocks_table(deep)
+        if hasattr(parent, 'log'):
+            parent.log(f"[UBOOT] พบ {len(self.env_blocks)} บล็อค{' (deep)' if deep else ''}")
+            for b in self.env_blocks:
+                parent.log(
+                    f"[UBOOT] block offset=0x{b.get('offset'):X} size=0x{b.get('size'):X} valid={b.get('valid')} bootdelay={b.get('bootdelay')} vars={len(b.get('vars',{}))}"
+                )
         if not self.env_blocks and not deep and not initial:
             # Suggest deep scan
             QMessageBox.information(self, "Deep Scan", "ยังไม่พบ environment ลองติ๊ก Deep Scan แล้วสแกนอีกครั้ง")
@@ -157,6 +168,7 @@ class UBootEnvEditorDialog(QDialog):
             return
         block = self.env_blocks[self.current_block_index]
         updates = {}
+        original = block.get('vars', {})
         for r in range(self.vars_table.rowCount()):
             k = self.vars_table.item(r, 0).text()
             v = self.vars_table.item(r, 1).text()
@@ -171,14 +183,36 @@ class UBootEnvEditorDialog(QDialog):
         if QMessageBox.question(self, "ยืนยัน", "แก้ไข environment นี้หรือไม่?") != QMessageBox.Yes:
             return
         parent = self.parent()
+        # Compute diff for logging
+        if hasattr(parent, 'log'):
+            changes = []
+            for k, new_v in updates.items():
+                old_v = original.get(k)
+                if new_v == '' and k in original:
+                    changes.append(f"ลบ {k}")
+                elif old_v is None:
+                    trunc = (new_v[:60] + '…') if len(new_v) > 60 else new_v
+                    changes.append(f"เพิ่ม {k}={trunc}")
+                elif old_v != new_v:
+                    trunc_new = (new_v[:40] + '…') if len(new_v) > 40 else new_v
+                    trunc_old = (old_v[:40] + '…') if len(old_v) > 40 else old_v
+                    changes.append(f"แก้ {k}: '{trunc_old}' -> '{trunc_new}'")
+            if changes:
+                parent.log(f"[UBOOT] Apply {len(changes)} การเปลี่ยนแปลงที่ offset 0x{block.get('offset'):X}")
+                for c in changes:
+                    parent.log(f"[UBOOT]   {c}")
         out = parent._ensure_unified_path()
         ok, err = self.patch_func(parent.fw_path, out, block['offset'], block['size'], updates)
         if ok:
             parent.fw_path = out
             QMessageBox.information(self, "Env", "สำเร็จ -> firmware unified ใหม่")
+            if hasattr(parent, 'log'):
+                parent.log(f"[UBOOT] บันทึกสำเร็จ -> firmware unified ใหม่ (offset 0x{block.get('offset'):X})")
             self._rescan()
         else:
             QMessageBox.critical(self, "Env", f"ล้มเหลว: {err}")
+            if hasattr(parent, 'log'):
+                parent.log(f"[UBOOT] ล้มเหลว: {err}")
 
     # ----------------- Export -----------------
     def _export_env(self):
@@ -199,6 +233,12 @@ class UBootEnvEditorDialog(QDialog):
                 for k, v in sorted(vars_dict.items()):
                     f.write(f"{k}={v}\n")
             QMessageBox.information(self, "Export", f"บันทึกแล้ว: {path}")
+            parent = self.parent()
+            if hasattr(parent, 'log'):
+                parent.log(f"[UBOOT] Export .env -> {path}")
         except Exception as e:
             QMessageBox.critical(self, "Export", str(e))
+            parent = self.parent()
+            if hasattr(parent, 'log'):
+                parent.log(f"[UBOOT] Export ล้มเหลว: {e}")
 
