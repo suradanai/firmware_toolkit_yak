@@ -1018,7 +1018,9 @@ def patch_uboot_env_vars(src_fw, dst_fw, target_offset, target_size, updates: di
                 log_func(f"[UBOOT] raw patch @0x{target_offset:X} size=0x{target_size:X} changed={changed} detail={' | '.join(attempts)}")
                 return True, ''
             else:
-                log_func(f"[UBOOT] raw mode no changes (detail={' | '.join(attempts)}); fallback reconstruct")
+                # Provide quick hexdump (printable subset) to aid debugging
+                preview = ''.join(chr(b) if 32 <= b < 127 else '.' for b in block[:min(96, len(block))])
+                log_func(f"[UBOOT] raw mode no changes (detail={' | '.join(attempts)}) preview='{preview}' ; fallback reconstruct")
                 # allow flow to continue into reconstruction logic below by forcing has_double False and not returning
                 # Proceed to reconstruction by simulating missing double terminator path
                 has_double = False
@@ -1086,43 +1088,48 @@ def patch_uboot_env_vars(src_fw, dst_fw, target_offset, target_size, updates: di
                         reconstructed = True
                         log_func(f"[UBOOT] fallback anchor reconstruct ({anchor_pat.decode(errors='ignore')}) pairs={len(pairs_raw)}")
                 if not reconstructed:
-                    # Direct pattern patch fallback (in-place) for bootdelay only
+                    # Direct pattern patch fallback (in-place) for bootdelay only within this block
+                    pattern_patched = False
                     if 'bootdelay' in updates:
                         new_bd = str(updates.get('bootdelay'))
                         if new_bd not in ('', 'None', 'NoneType', None):
                             bd_pat = b'bootdelay='
-                            pos_bd = data.find(bd_pat)
+                            pos_bd = block.find(bd_pat)  # search entire block (include crc area)
                             if pos_bd != -1:
                                 d_start = pos_bd + len(bd_pat)
                                 d_end = d_start
-                                while d_end < len(data) and chr(data[d_end]).isdigit():
+                                while d_end < len(block) and chr(block[d_end]).isdigit():
                                     d_end += 1
-                                old_digits = data[d_start:d_end]
+                                old_digits = block[d_start:d_end]
                                 if old_digits:
                                     new_digits = new_bd.encode()
                                     if len(new_digits) == len(old_digits):
                                         raw2 = bytearray(block)
-                                        raw2[4 + d_start:4 + d_end] = new_digits  # +4 skip crc
-                                        with open(src_fw, 'rb') as fsrc, open(dst_fw, 'wb') as fdst:
-                                            shutil.copyfileobj(fsrc, fdst)
-                                        with open(dst_fw, 'r+b') as f:
-                                            f.seek(target_offset)
-                                            f.write(raw2)
+                                        raw2[d_start:d_end] = new_digits
+                                        with open(src_fw, 'rb') as fsrc, open(dst_fw, 'wb') as fdst: shutil.copyfileobj(fsrc, fdst)
+                                        with open(dst_fw, 'r+b') as f: f.seek(target_offset); f.write(raw2)
                                         log_func(f"[UBOOT] fallback pattern bootdelay patch {old_digits.decode()}->{new_digits.decode()} @0x{target_offset:X} (no terminator)")
                                         return True, ''
                                     elif len(new_digits) < len(old_digits):
-                                        # shorten: write new digits then pad remainder with nulls
                                         raw2 = bytearray(block)
-                                        raw2[4 + d_start:4 + d_start + len(new_digits)] = new_digits
-                                        raw2[4 + d_start + len(new_digits):4 + d_end] = b'\x00' * (len(old_digits) - len(new_digits))
-                                        with open(src_fw, 'rb') as fsrc, open(dst_fw, 'wb') as fdst:
-                                            shutil.copyfileobj(fsrc, fdst)
-                                        with open(dst_fw, 'r+b') as f:
-                                            f.seek(target_offset)
-                                            f.write(raw2)
+                                        raw2[d_start:d_start+len(new_digits)] = new_digits
+                                        raw2[d_start+len(new_digits):d_end] = b'\x00' * (len(old_digits)-len(new_digits))
+                                        with open(src_fw, 'rb') as fsrc, open(dst_fw, 'wb') as fdst: shutil.copyfileobj(fsrc, fdst)
+                                        with open(dst_fw, 'r+b') as f: f.seek(target_offset); f.write(raw2)
                                         log_func(f"[UBOOT] fallback pattern bootdelay shrink {old_digits.decode()}->{new_digits.decode()} pad nulls @0x{target_offset:X}")
                                         return True, ''
-                                # if no digits or longer length requested -> cannot patch
+                    # Global compiled-environment search fallback
+                    if 'bootdelay' in updates:
+                        try:
+                            new_bd_val = str(updates.get('bootdelay'))
+                            if new_bd_val not in ('', 'None', 'NoneType', None):
+                                tmp_dst = dst_fw
+                                ok_compiled = patch_compiled_uboot_bootdelay(src_fw, tmp_dst, int(new_bd_val), log_func)
+                                if ok_compiled:
+                                    log_func(f"[UBOOT] global compiled fallback patched bootdelay={new_bd_val} (environment block unusable)")
+                                    return True, ''
+                        except Exception as _gfb_e:
+                            log_func(f"[UBOOT] global compiled fallback error: {_gfb_e}")
                     log_func('[UBOOT] ไม่พบ termination (\0\0) และกู้คืนไม่ได้')
                     return False, 'no terminator'
         else:
