@@ -981,35 +981,48 @@ def patch_uboot_env_vars(src_fw, dst_fw, target_offset, target_size, updates: di
         if not structured_ok and treat_raw:
             raw = bytearray(block)
             changed = 0
+            attempts = []  # collect diagnostics
             for k, new_v in updates.items():
                 if new_v in (None, ''):
+                    attempts.append(f"{k}: skip(delete)")
                     continue  # raw mode skip deletions
                 pat = f"{k}=".encode()
                 pos = raw.find(pat)
                 if pos == -1:
+                    attempts.append(f"{k}: notfound")
                     continue
                 val_start = pos + len(pat)
                 val_end = raw.find(b'\x00', val_start)
                 if val_end == -1:
+                    attempts.append(f"{k}: no-null")
                     continue
                 old_val = raw[val_start:val_end]
                 new_val_b = str(new_v).encode()
                 if len(new_val_b) > len(old_val):
-                    log_func(f"[UBOOT] raw skip {k} (ยาวขึ้น {len(old_val)}->{len(new_val_b)})")
+                    attempts.append(f"{k}: len+ {len(old_val)}->{len(new_val_b)} skip")
                     continue
+                if new_val_b == old_val:
+                    attempts.append(f"{k}: same")
+                else:
+                    attempts.append(f"{k}: {old_val.decode(errors='ignore')}->{new_val_b.decode(errors='ignore')}")
                 raw[val_start:val_start+len(new_val_b)] = new_val_b
                 if len(new_val_b) < len(old_val):
                     raw[val_start+len(new_val_b):val_end] = b'\x00' * (len(old_val)-len(new_val_b))
                 changed += 1
-            if not changed:
-                return False, 'no changes'
-            with open(src_fw, 'rb') as fsrc, open(dst_fw, 'wb') as fdst:
-                shutil.copyfileobj(fsrc, fdst)
-            with open(dst_fw, 'r+b') as f:
-                f.seek(target_offset)
-                f.write(raw)
-            log_func(f"[UBOOT] raw patch @0x{target_offset:X} size=0x{target_size:X} changed={changed}")
-            return True, ''
+            if changed:
+                with open(src_fw, 'rb') as fsrc, open(dst_fw, 'wb') as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
+                with open(dst_fw, 'r+b') as f:
+                    f.seek(target_offset)
+                    f.write(raw)
+                log_func(f"[UBOOT] raw patch @0x{target_offset:X} size=0x{target_size:X} changed={changed} detail={' | '.join(attempts)}")
+                return True, ''
+            else:
+                log_func(f"[UBOOT] raw mode no changes (detail={' | '.join(attempts)}); fallback reconstruct")
+                # allow flow to continue into reconstruction logic below by forcing has_double False and not returning
+                # Proceed to reconstruction by simulating missing double terminator path
+                has_double = False
+                # (fall through)
         # Structured mode (CRC region)
         reconstructed = False
         if not has_double:
