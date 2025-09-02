@@ -311,6 +311,11 @@ build_gui_command() {
   fi
 }
 
+DBG_ARG_DUMP=1
+if [ $DBG_ARG_DUMP -eq 1 ]; then
+  idx=0; for a in "$@"; do echo "[ARG:$idx] '$a'"; idx=$((idx+1)); done
+fi
+
 # ---------------- Parse Arguments ----------------
 while (( $# )); do
   case "$1" in
@@ -331,9 +336,9 @@ while (( $# )); do
   --install-desktop) INSTALL_DESKTOP=1; shift ;;
     --env-only) ENV_ONLY=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
-    --help|-h) usage ;;
-    --) shift; break ;;
-    *) err "Unknown option: $1" ;;
+  --help|-h) usage ;;
+  --) shift; break ;;
+  *) echo "[WARN] Ignoring unknown arg: '$1'" >&2; shift; continue ;;
   esac
 done
 
@@ -379,5 +384,7 @@ fi
 if [ $DRY_RUN -eq 1 ]; then
   echo "(dry-run only) $CMD"
 else
+  # Force unbuffered so output appears in launcher.log immediately
+  if [[ "$CMD" != *" -u "* ]]; then CMD="${CMD/"$VENV_PATH\/bin\/python"/"$VENV_PATH/bin/python -u"}"; fi
   eval "$CMD"
 fi
