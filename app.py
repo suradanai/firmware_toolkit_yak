@@ -34,6 +34,16 @@ except Exception as _qt_e:
         def connect(self,*a,**k): pass
 
 from dialogs import SelectivePatchDialog, RootFSEditDialog, CustomScriptDialog, SpecialFunctionsWindow, UBootEnvEditorDialog
+try:
+    # Modular action system imports
+    from action_registry import build_registry as _build_action_registry
+    from ui.menu_config import MENU_STRUCTURE as ACTION_MENU_STRUCTURE, ACTION_ICONS as ACTION_ICON_MAP
+    from actions.base import AppContext as _AppContext
+except Exception as _act_init_err:
+    _build_action_registry = None
+    ACTION_MENU_STRUCTURE = []
+    ACTION_ICON_MAP = {}
+    _AppContext = None
 from core.logging_utils import configure_logging
 from passlib.hash import sha512_crypt
 import core.multisquash as multisquash
@@ -283,6 +293,7 @@ def find_tool(name: str):
     Search order:
       1) tools_bin/ (repo vendor)
       2) tools_bin/bin/ (common layout)
+    3) firmware-mod-kit / firmware_workbench style directories
       3) any extra dirs from FMK_TOOL_DIRS env (colon separated)
       4) PATH (shutil.which)
     Accept either exact match or executable starting with name (e.g. name+'.py').
@@ -297,6 +308,13 @@ def find_tool(name: str):
         tb = os.path.join(here,'tools_bin')
         _add(tb)
         _add(os.path.join(tb,'bin'))
+        # FMK style directories (common names)
+        for folder in ('firmware-mod-kit','firmware_mod_kit','firmware-workbench','fmk'):
+            p = os.path.join(here, folder)
+            if os.path.isdir(p):
+                _add(p)
+                _add(os.path.join(p,'src'))
+                _add(os.path.join(p,'scripts'))
         extra = os.environ.get('FMK_TOOL_DIRS','')
         for d in extra.split(':'):
             if d: _add(d)
@@ -312,6 +330,24 @@ def find_tool(name: str):
         except Exception:
             continue
     return shutil.which(name)
+
+def has_busybox_applet(applet: str) -> bool:
+    """Check if system busybox provides a given applet (fast heuristic)."""
+    try:
+        import shutil, subprocess
+        bb = shutil.which('busybox')
+        if not bb:
+            return False
+        # Use busybox --list if available (faster parse)
+        try:
+            out = subprocess.check_output([bb,'--list'], text=True, stderr=subprocess.DEVNULL, timeout=2)
+            return any(line.strip()==applet for line in out.splitlines())
+        except Exception:
+            # fallback: run without args, parse help text
+            out = subprocess.check_output([bb], text=True, stderr=subprocess.DEVNULL, timeout=2)
+            return applet in out
+    except Exception:
+        return False
 
 def log_vendor_tools(log_func):
     try:
@@ -387,7 +423,17 @@ def repack_rootfs(fs_type, unsquashfs_dir, rootfs_bin_out, log_func, force_comp=
         if not mkcramfs:
             return False, "mkcramfs tool not found"
         try:
-            subprocess.check_output([mkcramfs, unsquashfs_dir, rootfs_bin_out], stderr=subprocess.STDOUT, timeout=90)
+            cmd = None
+            if mkcramfs:
+                cmd = [mkcramfs, unsquashfs_dir, rootfs_bin_out]
+            else:
+                # BusyBox fallback mkfs.cramfs applet
+                if has_busybox_applet('mkfs.cramfs'):
+                    bb = shutil.which('busybox')
+                    cmd = [bb, 'mkfs.cramfs', unsquashfs_dir, rootfs_bin_out]
+            if not cmd:
+                return False, "ไม่พบ mkcramfs หรือ busybox mkfs.cramfs"
+            subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=120)
             return True, ""
         except Exception as e:
             return False, f"mkcramfs error: {e}"
@@ -677,7 +723,8 @@ def scan_uboot_env_v2(
     if compiled_scan:
         try:
             import re
-            for m in re.finditer(b'bootdelay=\d+', blob):
+            # Use raw bytes pattern to avoid invalid escape warning
+            for m in re.finditer(rb'bootdelay=\d+', blob):
                 start = m.start()
                 # extend forward collecting key=value\0 strings
                 p = start
@@ -685,26 +732,30 @@ def scan_uboot_env_v2(
                 kv_bytes = b''; kv_parsed = {}
                 while p < limit_forward:
                     end = blob.find(b'\x00', p)
-                    if end == -1: break
+                    if end == -1:
+                        break
                     seg = blob[p:end]
                     p = end + 1
                     if seg == b'':
                         break
                     if b'=' not in seg:
                         # if non key=value encountered early, abort
-                        if len(kv_parsed) < 3: break
-                        else: continue
-                    k,v = seg.split(b'=',1)
+                        if len(kv_parsed) < 3:
+                            break
+                        else:
+                            continue
+                    k, v = seg.split(b'=', 1)
                     try:
                         ks = k.decode(); vs = v.decode(errors='ignore')
                     except Exception:
                         continue
-                    if any(ord(c)<32 or ord(c)>126 for c in ks):
+                    if any(ord(c) < 32 or ord(c) > 126 for c in ks):
                         break
-                    kv_parsed[ks]=vs
+                    kv_parsed[ks] = vs
                     kv_bytes += seg + b'\x00'
-                    if len(kv_parsed) > 64: break
-                if len(kv_parsed) >=3:
+                    if len(kv_parsed) > 64:
+                        break
+                if len(kv_parsed) >= 3:
                     s = score_vars(kv_parsed) + 1  # compiled bonus
                     candidates.append({
                         'offset': start,
@@ -713,8 +764,8 @@ def scan_uboot_env_v2(
                         'bootdelay': kv_parsed.get('bootdelay'),
                         'score': s,
                         'crc_ok': False,
-                        'endian_match':'n/a',
-                        'type':'compiled'
+                        'endian_match': 'n/a',
+                        'type': 'compiled'
                     })
         except Exception:
             pass
@@ -1566,11 +1617,7 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
 
         for txt, slot in [
-            ('Boot Delay (Popup Auto)', self.prompt_and_patch_boot_delay),
             ('Selective Patch...', self.open_selective_patch_dialog),
-            ('RootFS Editor', self.edit_rootfs_file),
-            ('U-Boot Env Editor', self.open_uboot_env_editor_dialog),
-            ('Custom Script', self.run_custom_script),
             ('Check Hash / Signature', self.check_hash_signature),
             ('Tool Chains Summary', self._show_tool_chains),
             ('Binwalk Self-Test', self._binwalk_self_test),
@@ -1589,19 +1636,18 @@ class MainWindow(QMainWindow):
         except Exception as e:
             try: self.log(f'[INIT] build_ui error: {e}')
             except: pass
-        # แสดงสถานะเครื่องมือ vendor (tools_bin) ทันที
-        try: log_vendor_tools(self.thread_log.emit)
-        except Exception: pass
-        # ลงทะเบียนเมนู vendor
-        try: self._register_vendor_tool_actions()
+        # (ตัดการแสดง log เริ่มต้นที่ยาว — จะใช้ระบบ diagnostics ใหม่ด้านล่างแทน)
+        # เริ่มระบบวิเคราะห์ปัญหาเริ่มต้นแบบย่อ (แสดงเฉพาะที่ล้มเหลวพร้อมคำแนะนำ)
+        try:
+            self.run_startup_diagnostics()
         except Exception as e:
-            try: self.log(f'[TOOLS] ผูกเมนู vendor ล้มเหลว: {e}')
+            try: self.log(f'[DIAG] exception diagnostics: {e}')
             except: pass
-        # แสดง summary chain ของเครื่องมือ (สำหรับ debug/fallback)
-        try: tool_log_summary(self.thread_log.emit)
-        except Exception: pass
-
-        # (ใช้ build_ui สำหรับสร้างหน้าและเมนูทั้งหมดแล้ว ไม่ต้องสร้างซ้ำที่นี่)
+        try:
+            self._init_action_system()
+        except Exception as e:
+            try: self.log(f'[ACTIONS] init failed: {e}')
+            except Exception: pass
 
     def _prompt_install_fmk_deps(self):
         ans = QMessageBox.question(self, 'FMK dependencies',
@@ -1671,6 +1717,58 @@ class MainWindow(QMainWindow):
             except Exception: pass
             try: QMessageBox.warning(self,'Boot Delay', f'Exception: {e}')
             except Exception: pass
+
+    # New quick picker for Boot Delay (0-9 seconds) with auto env/heuristic patch
+    def show_boot_delay_picker(self):
+        if not getattr(self,'fw_path',None):
+            QMessageBox.information(self,'Boot Delay','Open a firmware first'); return
+        dlg = QDialog(self); dlg.setWindowTitle('Select Boot Delay (0-9)'); lay = QVBoxLayout(dlg)
+        grid = QHBoxLayout();
+        def _choose(v): dlg.done(v+1)
+        for i in range(10):
+            b = QPushButton(str(i)); b.setFixedSize(42,42); b.clicked.connect(lambda _,val=i:_choose(val)); grid.addWidget(b)
+        lay.addLayout(grid)
+        cancel = QPushButton('Cancel'); cancel.clicked.connect(dlg.reject); lay.addWidget(cancel)
+        code = dlg.exec()
+        if code <= 0: return
+        val = code-1
+        self._auto_patch_bootdelay(val)
+
+    def _auto_patch_bootdelay(self, val: int):
+        try:
+            self.log(f'[BOOT] Auto patch bootdelay={val}')
+            # Try env patch first
+            try:
+                cands = scan_uboot_env_v2(self.fw_path, deep=False, keep_crc_mismatch=True)
+            except Exception as e:
+                self.log(f'[BOOT] env scan failed: {e}'); cands=[]
+            target = None
+            for c in cands:
+                if 'vars' in c and 'bootdelay' in c['vars']:
+                    target = c; break
+            if target:
+                outp = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','')+f'_bootdelay_env{val}.bin')
+                ok,msg = patch_uboot_env_vars(self.fw_path, outp, target['offset'], target['size'], {'bootdelay': str(val)}, self.log)
+                if ok:
+                    self.fw_path = outp
+                    self.log(f'[BOOT] Patched via env @0x{target["offset"]:X}')
+                    QMessageBox.information(self,'Boot Delay', f'Patched bootdelay={val} (env)')
+                    return
+                else:
+                    self.log(f'[BOOT] env patch failed: {msg}')
+            # Fallback heuristic raw patch
+            outp = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','')+f'_bootdelay{val}.bin')
+            okc, msg = core_patch_boot_delay_impl(self.fw_path, None, val, outp, lambda m: self.thread_log.emit(m))
+            if okc:
+                self.fw_path = outp
+                self.log(f'[BOOT] Patched bootdelay heuristic -> {outp}')
+                QMessageBox.information(self,'Boot Delay', f'Patched bootdelay={val}')
+            else:
+                self.log(f'[BOOT] bootdelay patch failed: {msg}')
+                QMessageBox.warning(self,'Boot Delay', f'Failed: {msg}')
+        except Exception as e:
+            self.log(f'[BOOT] exception auto patch: {e}')
+            QMessageBox.warning(self,'Boot Delay', f'Exception: {e}')
 
     def _binwalk_self_test(self):
         import shutil, subprocess, tempfile
@@ -1867,14 +1965,13 @@ class MainWindow(QMainWindow):
         self.sub_menu_list = QListWidget(); self.sub_menu_list.setObjectName('subMenuList'); self.sub_menu_list.setFixedWidth(320)
         self.status_panel = QWidget(); status_l = QVBoxLayout(self.status_panel); self.status_label = QLabel('Ready'); self.status_label.setObjectName('statusLock'); status_l.addWidget(self.status_label); status_l.addStretch()
 
-        # Declarative menu structure
+        # Declarative menu structure (refactored & consolidated)
         self.MENU_STRUCTURE = [
             {'key':'dashboard','title':'Dashboard','color':'#2962FF','submenu':[
                 {'id':'analyze','text':'วิเคราะห์เฟิร์มแวร์ (Analyze)'},
                 {'id':'apply_pipeline','text':'Apply suggested pipeline'}], 'page':page_dashboard},
-            # Reordered: Patching before FMK (user focus on quick patch actions) 
             {'key':'patch','title':'Patching','color':'#AD1457','submenu':[
-                {'id':None,'text':'— Core Patches —'},  # header (non-selectable)
+                {'id':None,'text':'— Core Patches —'},
                 {'id':'boot_delay','text':'Boot Delay'},
                 {'id':'serial','text':'Serial Shell'},
                 {'id':'network','text':'Network'},
@@ -1892,11 +1989,16 @@ class MainWindow(QMainWindow):
             {'key':'tools','title':'Tools','color':'#F57C00','submenu':[
                 {'id':'msq_dry','text':'Multi-Squash: Dry-run'},
                 {'id':'msq_apply','text':'Multi-Squash: Apply'},
+                {'id':'autorun_dry','text':'Auto-Run: Dry (A)'},
+                {'id':'autorun_patch','text':'Auto-Run: Patch (B)'},
                 {'id':'archive','text':'Archive Outputs'}], 'page':page_tools},
-            {'key':'special','title':'Special','color':'#6A1B9A','submenu':[], 'page':page_special},
+            {'key':'special','title':'Special','color':'#6A1B9A','submenu':[
+                {'id':'rootfs_editor','text':'Open RootFS Editor'},
+                {'id':'custom_script','text':'Run Custom Script'},
+                {'id':'uboot_env','text':'U-Boot Env Editor'},
+                {'id':'env_scan','text':'Scan U-Boot Env (v2)'}], 'page':page_special},
             {'key':'settings','title':'Settings','color':'#455A64','submenu':[], 'page':page_settings},
         ]
-        # Icon mapping (emoji placeholders can be replaced with QIcons later)
         self.ACTION_ICONS = {
             ('dashboard','analyze'):'🔍',
             ('dashboard','apply_pipeline'):'⚙️',
@@ -1913,8 +2015,14 @@ class MainWindow(QMainWindow):
             ('fmk','fs_yaffs2'):'📂',
             ('tools','msq_dry'):'🧪',
             ('tools','msq_apply'):'✅',
+            ('tools','autorun_dry'):'🚀',
+            ('tools','autorun_patch'):'🛠️',
             ('tools','archive'):'🗜️',
             ('tools','clean_vendor'):'🧹',
+            ('special','rootfs_editor'):'🧬',
+            ('special','custom_script'):'📜',
+            ('special','uboot_env'):'🧪',
+            ('special','env_scan'):'🔎',
         }
         self._action_usage = {}
         self._menu_index_by_key = {}; self._menu_children = {}; self._main_menu_buttons = []
@@ -1942,7 +2050,7 @@ class MainWindow(QMainWindow):
         except Exception: pass
         self.log_bilingual(f'โหลดโครงสร้างเมนู {len(self._main_menu_buttons)} หมวด', f'Loaded {len(self._main_menu_buttons)} menu groups')
 
-        # ---------------- Logs / Right Pane ----------------
+        # ---------------- Logs / Right Pane (refactored) ----------------
         right_tabs = QTabWidget(); right_tabs.setDocumentMode(True)
         self.log_view_th = QTextEdit(); self.log_view_th.setReadOnly(True)
         self.log_view_en = QTextEdit(); self.log_view_en.setReadOnly(True)
@@ -1952,18 +2060,15 @@ class MainWindow(QMainWindow):
             try: self.log_view_th.clear(); self.log_view_en.clear(); self.log('[SYSTEM] ล้างบันทึกแล้ว (Logs cleared)')
             except Exception: pass
         self.btn_clear_logs.clicked.connect(_clear_logs)
-
-        # ---------------- Split Layout ----------------
         hsplit = QSplitter(Qt.Horizontal)
         left_widget = QWidget(); left_l = QVBoxLayout(left_widget); left_l.setContentsMargins(6,6,6,6); left_l.addWidget(self.main_menu_widget); left_l.addStretch(); hsplit.addWidget(left_widget)
         center_widget = QWidget(); center_l = QVBoxLayout(center_widget); center_l.setContentsMargins(6,6,6,6); center_l.addWidget(self.sub_menu_list); center_l.addWidget(self.pages); center_widget.setLayout(center_l); hsplit.addWidget(center_widget)
-        right_widget = QWidget(); right_wl = QVBoxLayout(right_widget); right_wl.setContentsMargins(4,4,4,4); right_split = QSplitter(Qt.Vertical); self._right_split = right_split
-        status_wrap = QWidget(); sw_l = QVBoxLayout(status_wrap); sw_l.setContentsMargins(0,0,0,0); sw_l.addWidget(self.status_panel); sw_l.addWidget(self.btn_clear_logs); sw_l.addStretch()
-        logs_wrap = QWidget(); lw_l = QVBoxLayout(logs_wrap); lw_l.setContentsMargins(0,0,0,0); lw_l.addWidget(right_tabs)
-        right_split.addWidget(status_wrap); right_split.addWidget(logs_wrap); right_split.setStretchFactor(0,0); right_split.setStretchFactor(1,1)
-        right_wl.addWidget(right_split); right_widget.setLayout(right_wl); hsplit.addWidget(right_widget)
+        right_widget = QWidget(); right_wl = QVBoxLayout(right_widget); right_wl.setContentsMargins(4,4,4,4)
+        right_wl.addWidget(right_tabs, 1)
+        bottom_bar = QHBoxLayout(); bottom_bar.addWidget(self.status_label); bottom_bar.addStretch(); bottom_bar.addWidget(self.btn_clear_logs)
+        right_wl.addLayout(bottom_bar); right_widget.setLayout(right_wl); hsplit.addWidget(right_widget)
         try:
-            from PySide6.QtCore import QTimer; QTimer.singleShot(50, lambda: right_split.setSizes([220,420]))
+            from PySide6.QtCore import QTimer; QTimer.singleShot(80, lambda: hsplit.setSizes([260,540,360]))
         except Exception: pass
         self.log_view = self.log_view_th
         main_container = QWidget(); main_layout = QVBoxLayout(main_container); main_layout.addWidget(hsplit); self.setCentralWidget(main_container)
@@ -2014,6 +2119,117 @@ class MainWindow(QMainWindow):
                 pass
         except Exception as e:
             self.log(f'[THEME] apply failed: {e}')
+
+    # ---------------- Startup Diagnostics (Minimal Logging) ----------------
+    def run_startup_diagnostics(self):
+        """รันชุดตรวจสอบสั้น ๆ และบันทึกเฉพาะที่ล้มเหลวพร้อมแนวทางแก้ไข.
+        หากผ่านทั้งหมดจะไม่แสดงข้อความ (ลด noise ตอนเริ่มโปรแกรม)
+        """
+        self._startup_failures = []
+        import shutil
+        def _check(name, func, suggest):
+            try:
+                ok, detail = func()
+            except Exception as e:
+                ok = False; detail = str(e)
+            if not ok:
+                self._startup_failures.append({'name': name, 'error': detail, 'suggest': suggest})
+        # --- Checks ---
+        _check('PySide6/Qt', lambda: ((hasattr(sys.modules.get('PySide6.QtWidgets'), 'QApplication')), ''), 'pip install PySide6')
+        _check('unsquashfs', lambda: ((shutil.which('unsquashfs') is not None), 'not found'), 'sudo apt install squashfs-tools')
+        _check('mksquashfs', lambda: ((shutil.which('mksquashfs') is not None), 'not found'), 'sudo apt install squashfs-tools')
+        _check('binwalk', lambda: ((shutil.which('binwalk') is not None), 'not found'), 'sudo apt install binwalk || pip install binwalk')
+        _check('cramfs extract', lambda: ((shutil.which('cramfsck') or shutil.which('uncramfs') or has_busybox_applet('cramfsck')) is not None, 'not found'), 'ติดตั้ง cramfs (cramfsprogs เดิม) หรือใช้ busybox ที่มี cramfsck')
+        _check('cramfs pack', lambda: ((shutil.which('mkcramfs') or has_busybox_applet('mkfs.cramfs')) is not None, 'not found'), 'หา mkcramfs (legacy) หรือ busybox mkfs.cramfs')
+        _check('jffs2 extract', lambda: ((shutil.which('unjffs2') is not None), 'not found'), 'ใช้ firmware-mod-kit เพื่อนำ unjffs2 หรือสคริปต์เสริม')
+        _check('jffs2 pack', lambda: ((shutil.which('mkfs.jffs2') is not None), 'not found'), 'sudo apt install mtd-tools')
+        _check('yaffs2 extract', lambda: ((shutil.which('unyaffs2') or shutil.which('unyaffs')) is not None), 'not found', 'เพิ่ม unyaffs2 จาก firmware-mod-kit / โครงการ yaffs')
+        _check('yaffs2 pack', lambda: ((shutil.which('mkyaffs2') is not None), 'not found'), 'ดึง mkyaffs2 จาก firmware-mod-kit หรือคอมไพล์')
+        _check('fw-manager.sh', lambda: ((os.path.exists(os.path.join(os.path.dirname(__file__), 'fw-manager.sh'))), 'missing'), './setup.sh เพื่อติดตั้ง FMK หรือคัดลอก fw-manager.sh')
+        if self._startup_failures:
+            for f in self._startup_failures:
+                self.log(f"[เริ่มต้นล้มเหลว] {f['name']}: {f['error']} — แนะนำ: {f['suggest']}")
+
+    # ---------------- Modular Action System ----------------
+    def _init_action_system(self):
+        """Initialize external (modular) action registry and Actions menu.
+
+        Leaves existing legacy left navigation intact for now; migration can
+        remove _register_actions + MENU_STRUCTURE later once confidence gained.
+        """
+        if _build_action_registry is None:
+            self.log('[ACTIONS] modular system unavailable (imports failed)')
+            return
+        # Build registry
+        self._action_registry = _build_action_registry(self)
+        # Build top-level "Actions" menu if not existing
+        menubar = self.menuBar()
+        actions_menu = None
+        for act in menubar.actions():
+            if act.text() == 'Actions':
+                actions_menu = act.menu(); break
+        if actions_menu is None:
+            from PySide6.QtWidgets import QMenu
+            actions_menu = QMenu('Actions', self)
+            menubar.addMenu(actions_menu)
+        # Populate from ACTION_MENU_STRUCTURE
+        actions_menu.clear()
+        for group in ACTION_MENU_STRUCTURE:
+            label = group.get('label','Group')
+            from PySide6.QtWidgets import QMenu
+            sub = QMenu(label, self)
+            actions_menu.addMenu(sub)
+            for item in group.get('children', []):
+                if item.get('separator'):
+                    sub.addSeparator(); continue
+                act_id = item.get('id')
+                text = item.get('label', act_id)
+                if not act_id:
+                    continue
+                action_obj = self._action_registry.get(act_id)
+                if not action_obj:
+                    # create disabled placeholder
+                    qa = QAction(text+' (missing)', self); qa.setEnabled(False); sub.addAction(qa); continue
+                qa = QAction(text, self)
+                qa.triggered.connect(lambda _=False, aid=act_id: self.run_action(aid))
+                sub.addAction(qa)
+        self.log(f'[ACTIONS] registry loaded: {len(self._action_registry)} actions')
+
+    def run_action(self, action_id: str):
+        """Execute an action by id via modular registry, constructing context."""
+        try:
+            if not hasattr(self, '_action_registry'):
+                self.log('[ACTIONS] registry not initialized'); return
+            action = self._action_registry.get(action_id)
+            if not action:
+                self.log(f'[ACTIONS] unknown id: {action_id}'); return
+            if _AppContext is None:
+                self.log('[ACTIONS] AppContext missing'); return
+            # Build context with common callables
+            ctx = _AppContext(
+                window=self,
+                logger=self.log,
+                status=lambda s: self.status_label.setText(s) if hasattr(self,'status_label') else None,
+                scan_env=getattr(self,'_special_env_scan_wrapper', None),
+                patch_bootdelay=getattr(self,'_auto_patch_bootdelay', None),
+                open_env_editor=getattr(self,'open_uboot_env_editor_dialog', None),
+                open_rootfs_editor=getattr(self,'open_rootfs_editor_dialog', None),
+                run_selective_patch=getattr(self,'open_selective_patch_dialog', None),
+                run_network_tools=getattr(self,'open_network_tools_dialog', None),
+                run_serial_shell=getattr(self,'open_serial_shell_dialog', None),
+                run_custom_script=getattr(self,'run_custom_script', None),
+                extra={'fw_path': getattr(self,'fw_path', None)}
+            )
+            # Status update
+            try:
+                self.status_label.setText(f'Running action: {action_id}')
+            except Exception: pass
+            action.run(ctx)
+            try:
+                self.status_label.setText(f'Done: {action_id}')
+            except Exception: pass
+        except Exception as e:
+            self.log(f'[ACTIONS] run {action_id} error: {e}')
 
     # ---------------- Vendor Tools Integration ----------------
     def _register_vendor_tool_actions(self):
@@ -2272,6 +2488,22 @@ class MainWindow(QMainWindow):
             seen_base.add(base); final.append(label)
         if not final: final=['ttyS0']
         return final
+
+    def _special_env_scan_wrapper(self):
+        """Trigger U-Boot env scan from Special submenu (reuses existing button logic)."""
+        try:
+            if hasattr(self, 'btn_scan_env') and self.btn_scan_env:
+                self.btn_scan_env.click()
+            else:
+                # fallback direct call
+                if not getattr(self, 'fw_path', None):
+                    QMessageBox.information(self,'Env Scan','Open a firmware first'); return
+                self.log('[UBOOT] scanning (direct) ...')
+                keep_mismatch = getattr(self, 'cfg_keep_crc_mismatch', True)
+                cands = scan_uboot_env_v2(self.fw_path, deep=True, keep_crc_mismatch=keep_mismatch)
+                self.log(f'[UBOOT] candidates: {len(cands)}')
+        except Exception as e:
+            self.log(f'[UBOOT] special env scan error: {e}')
 
     # ---------------- Filesystem Browsers ----------------
     def _open_fs_browser(self, fs_type: str):
@@ -3560,12 +3792,188 @@ class MainWindow(QMainWindow):
         try:
             from dialogs import UBootEnvEditorDialog
             self.log('[UBOOT] เปิดหน้าแก้ไข environment')
-            dlg = UBootEnvEditorDialog(self, lambda deep=False: scan_uboot_env(self.fw_path, deep=deep),
-                                       lambda src,dst,off,size,updates: patch_uboot_env_vars(src,dst,off,size,updates, self.log))
+            # Prepare env_blocks attribute expected by dialog (initial normal scan)
+            try:
+                self.env_blocks = scan_uboot_env(self.fw_path, deep=False) or []
+            except Exception as _e_scan:
+                self.log(f'[UBOOT] scan error: {_e_scan}')
+                self.env_blocks = []
+            # Provide backend helper wrappers expected by dialog
+            def patch_uboot_env_vars_wrapper(offset,size,changes_dict):
+                out_path = self._ensure_unified_path()
+                ok,msg = patch_uboot_env_vars(self.fw_path, out_path, offset, size, changes_dict, self.log)
+                if ok:
+                    self.fw_path = out_path
+                    # re-scan to update crc status
+                    try:
+                        self.env_blocks = scan_uboot_env(self.fw_path, deep=False) or []
+                    except Exception:
+                        pass
+                return ok
+            # Attach methods so dialog can call them
+            self.patch_uboot_env_vars = patch_uboot_env_vars_wrapper
+            # Ensure repair and rebuild helpers already exist (they are methods below)
+            # Ensure compiled env hits attribute (dialog reads last_compiled_env_hits)
+            if not hasattr(self, 'last_compiled_env_hits'):
+                self.last_compiled_env_hits = []
+            # Raw data accessor for compiled search
+            try:
+                with open(self.fw_path,'rb') as f:_raw=f.read()
+            except Exception:
+                _raw=b''
+            self.raw_data = _raw
+            dlg = UBootEnvEditorDialog(self, self)
             dlg.exec()
         except Exception as e:
             QMessageBox.critical(self,'U-Boot', f'Error: {e}')
             self.log(f'[UBOOT] dialog open error: {e}')
+
+    # --- U-Boot extra helpers (CRC repair & compiled env search) ---
+    def repair_uboot_env_block(self, offset: int, size: int):
+        """Attempt to reconstruct env key/value list and fix CRC+terminator.
+        Returns (ok,msg)."""
+        try:
+            with open(self.fw_path,'rb') as f:
+                f.seek(offset)
+                block = f.read(size)
+            if len(block)!=size:
+                return False,'อ่าน block ไม่ครบ'
+            data = block[4:]
+            end_double = data.find(b'\x00\x00')
+            reconstructed=False
+            if end_double==-1:
+                # sequential scan
+                scan_region=data
+                pairs_raw=[]; p=0; max_len=min(len(scan_region), size-4)
+                while p < max_len:
+                    nxt=scan_region.find(b'\x00', p)
+                    if nxt==-1: break
+                    seg=scan_region[p:nxt]
+                    if seg==b'': break
+                    if b'=' in seg and 1 <= seg.find(b'=') <= 64:
+                        key_part=seg.split(b'=')[0]
+                        if all(32<=b<=126 for b in key_part): pairs_raw.append(seg)
+                        else: break
+                    else:
+                        if pairs_raw: break
+                    p=nxt+1
+                    if p<max_len and scan_region[p:p+1]==b'\x00': break
+                if pairs_raw:
+                    env_region=b''.join(s+b'\x00' for s in pairs_raw)
+                    reconstructed=True
+                else:
+                    return False,'กู้คืนลิสต์ key=value ไม่ได้'
+            else:
+                env_region=data[:end_double+1]
+            # parse pairs for sanity
+            pairs=[]
+            for raw in env_region.split(b'\x00'):
+                if not raw or b'=' not in raw: continue
+                k,v=raw.split(b'=',1)
+                try:
+                    k=k.decode(); v=v.decode(errors='ignore')
+                except Exception:
+                    continue
+                pairs.append((k,v))
+            if len(pairs) < 3:
+                return False,'จำนวนคู่ key=value น้อยเกินไป'
+            # ensure double null
+            if not env_region.endswith(b'\x00'):
+                env_region += b'\x00'
+            if not env_region.endswith(b'\x00\x00'):
+                env_region += b'\x00'
+            import binascii, struct as _s
+            new_crc = binascii.crc32(env_region.rstrip(b'\x00')+b'\x00') & 0xffffffff
+            # prepare block with padding
+            used = 4 + len(env_region)
+            if used > size:
+                return False,'env_region ใหญ่เกิน block'
+            padding = b'\x00' * (size - used)
+            new_block = _s.pack('<I', new_crc) + env_region + padding
+            out = self._ensure_unified_path()
+            with open(self.fw_path,'rb') as fsrc, open(out,'wb') as fdst: shutil.copyfileobj(fsrc,fdst)
+            with open(out,'r+b') as f:
+                f.seek(offset); f.write(new_block)
+            self.fw_path = out
+            self.log(f"[UBOOT] ซ่อม CRC สำเร็จ @0x{offset:X} pairs={len(pairs)} crc_new={new_crc:08x}{' (reconstructed)' if reconstructed else ''}")
+            return True,'OK'
+        except Exception as e:
+            return False,str(e)
+
+    def force_rebuild_uboot_env_block(self, offset: int, size: int, vars_dict: dict):
+        """Force rebuild an env block with provided vars_dict regardless of current contents.
+        WARNING: Missing critical keys may affect boot. Returns (ok,msg)."""
+        try:
+            if not vars_dict:
+                return False,'ไม่มี key=value ให้สร้าง'
+            # minimal sanity: ensure keys are printable and contain '=' when encoded pattern applied
+            payload_parts=[]
+            for k,v in vars_dict.items():
+                if not k or any(ord(c)<32 or ord(c)>126 for c in k):
+                    return False,f'key ไม่ถูกต้อง: {k!r}'
+                if '\x00' in k or '\x00' in v:
+                    return False,'มี NUL ในข้อมูล'
+                payload_parts.append(f"{k}={v}".encode('utf-8')+b'\x00')
+            env_region = b''.join(payload_parts) + b'\x00'  # double terminator
+            import binascii, struct as _s
+            new_crc = binascii.crc32(env_region.rstrip(b'\x00')+b'\x00') & 0xffffffff
+            used = 4 + len(env_region)
+            if used > size:
+                return False, f'ขนาด environment ใหม่ใหญ่เกิน block ({used}>{size})'
+            padding = b'\x00' * (size - used)
+            new_block = _s.pack('<I', new_crc) + env_region + padding
+            out = self._ensure_unified_path()
+            with open(self.fw_path,'rb') as fsrc, open(out,'wb') as fdst:
+                shutil.copyfileobj(fsrc,fdst)
+            with open(out,'r+b') as f:
+                f.seek(offset); f.write(new_block)
+            self.fw_path = out
+            self.log(f"[UBOOT] FORCE REBUILD @0x{offset:X} vars={len(vars_dict)} crc={new_crc:08x}")
+            return True,'OK'
+        except Exception as e:
+            return False,str(e)
+
+    def search_compiled_envs(self, limit=None):
+        """Search firmware for compiled default env string regions (bootdelay=... sequence)."""
+        try:
+            with open(self.fw_path,'rb') as f: data=f.read() if limit is None else f.read(limit)
+            import re
+            hits=[]; seen=set()
+            # Use raw bytes pattern to avoid invalid escape warning
+            for m in re.finditer(rb'bootdelay=\d+', data):
+                start = m.start()
+                # collect forward key=value strings
+                p = start; region = b''; count = 0; max_len = 0x4000
+                while p < len(data) and len(region) < max_len:
+                    end = data.find(b'\x00', p)
+                    if end == -1:
+                        break
+                    seg = data[p:end]
+                    if seg == b'':
+                        break
+                    if b'=' in seg and all(32 <= c < 127 for c in seg.split(b'=')[0]) and len(seg.split(b'=')[0]) <= 64:
+                        region += seg + b'\x00'; count += 1; p = end + 1
+                    else:
+                        break
+                if count >= 3:
+                    key = (start, count)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    snippet = region[:120].replace(b'\x00', b'|')
+                    hits.append({'offset': start, 'pairs': count, 'snippet': snippet.decode(errors='ignore')})
+            if hits:
+                self.log(f"[UBOOT] พบ compiled env {len(hits)} จุด")
+                for h in hits[:40]:
+                    self.log(f"[UBOOT] compiled off=0x{h['offset']:X} pairs={h['pairs']} {h['snippet']}")
+            else:
+                self.log('[UBOOT] ไม่พบ compiled env อื่น')
+            # store for dialog import
+            self.last_compiled_env_hits = hits
+            return hits
+        except Exception as e:
+            self.log(f'[UBOOT] compiled env search error: {e}')
+            return []
 
     def _ensure_unified_path(self):
         # Create a copy for editing operations; keep original safe
