@@ -4149,14 +4149,21 @@ def auto_detect_tty_port_from_context(fw_path, rootfs_part, unsquashfs_dir, log_
 
 def main():
     """Application entry point for launching the PySide6 GUI."""
+    print('[APP] main() starting')
     # Set High DPI policy BEFORE QApplication creation (Task B)
     try:
         from PySide6.QtGui import QGuiApplication
         QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)  # type: ignore
-    except Exception:
-        pass
-    # Avoid launching multiple instances if already running in certain automation contexts
-    app = QApplication.instance() or QApplication(sys.argv)
+        print('[APP] Set High DPI rounding policy')
+    except Exception as e:
+        print('[APP][WARN] DPI policy set failed:', e)
+    # Create QApplication
+    try:
+        app = QApplication.instance() or QApplication(sys.argv)
+        print('[APP] QApplication created ok')
+    except Exception as e:
+        print('[APP][FATAL] QApplication creation failed:', e)
+        return 1
     # Load custom QSS style if present
     try:
         qss_path = os.path.join(os.path.dirname(__file__), 'styles.qss')
@@ -4172,16 +4179,27 @@ def main():
         app.setFont(f)
     except Exception:
         pass
-    win = MainWindow()
+    try:
+        win = MainWindow()
+        print('[APP] MainWindow constructed')
+    except Exception as e:
+        print('[APP][FATAL] MainWindow init failed:', e)
+        return 2
     # Provide a sensible default size if not restored by window manager
     try:
         if win.width() < 800 or win.height() < 600:
             win.resize(1280, 800)
     except Exception:
         pass
-    win.show()
-    # (Policy already set before QApplication creation)
-    sys.exit(app.exec())
+    try:
+        win.show()
+        print('[APP] MainWindow shown, entering event loop')
+        rc = app.exec()
+        print('[APP] event loop exit rc', rc)
+        sys.exit(rc)
+    except Exception as e:
+        print('[APP][FATAL] Event loop failed:', e)
+        return 3
 
 
 if __name__ == '__main__':  # pragma: no cover
