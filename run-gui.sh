@@ -56,6 +56,19 @@
 #
 set -euo pipefail
 
+# --- Logging (for desktop launcher debugging) ---
+LOG_DIR="$HOME/.cache/firmware_toolkit_yak"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+LOG_FILE="$LOG_DIR/launcher.log"
+{
+  echo "---- launch $(date '+%Y-%m-%d %H:%M:%S') pid=$$ ----"
+  echo "PWD: $(pwd)"
+  echo "Original args: $*"
+} >>"$LOG_FILE" 2>&1
+# Redirect all subsequent stdout/stderr to log (still allow dry-run to echo)
+exec >>"$LOG_FILE" 2>&1
+trap 'ec=$?; echo "[FATAL] Exit rc=$ec line=$LINENO" >>"$LOG_FILE"' EXIT
+
 # ---------------- Configuration Defaults ----------------
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR=".venv"

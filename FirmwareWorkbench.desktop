@@ -7,10 +7,10 @@ GenericName=Firmware Toolkit
 GenericName[th]=ชุดเครื่องมือเฟิร์มแวร์
 Comment=Firmware reverse, analysis, patch & AI toolkit
 Comment[th]=ชุดเครื่องมือสำหรับถอด วิเคราะห์ และแพตช์เฟิร์มแวร์ (พร้อม AI)
-# หมายเหตุ: เส้นทางมีช่องว่าง ต้อง escape ด้วย backslash ตามสเปค freedesktop
-Exec=/home/yakdev/Desktop/yakDEV\ Repository/firmware_toolkit_yak/run-gui.sh
+# NOTE: Path has space; safest is to invoke via bash -c and quote inside.
+Exec=bash -lc '"/home/yakdev/Desktop/yakDEV Repository/firmware_toolkit_yak/run-gui.sh"'
 TryExec=/home/yakdev/Desktop/yakDEV\ Repository/firmware_toolkit_yak/run-gui.sh
-Path=/home/yakdev/Desktop/yakDEV\ Repository/firmware_toolkit_yak
+# Path omitted (script computes PROJECT_ROOT).
 Icon=firmware_toolkit_yak
 Terminal=false
 Categories=Utility;Development;Security;IDE;
