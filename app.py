@@ -37,6 +37,7 @@ from dialogs import SelectivePatchDialog, RootFSEditDialog, CustomScriptDialog, 
 from core.logging_utils import configure_logging
 from passlib.hash import sha512_crypt
 import core.multisquash as multisquash
+from core.patches import patch_rootfs_shell_serial, patch_rootfs_network, patch_root_password, patch_boot_delay as core_patch_boot_delay_impl
 
 # ---- Temporary i18n & worker stubs (rebuild after corruption) ----
 def _(key: str) -> str:
@@ -957,84 +958,139 @@ def patch_compiled_uboot_bootdelay(src_fw, dst_fw, new_val, log_func=lambda m:No
         return False
 
 def patch_uboot_env_vars(src_fw, dst_fw, target_offset, target_size, updates: dict, log_func=lambda m:None):
-    """Patch arbitrary U-Boot environment variables.
-    updates: {key: new_value or '' (empty string means delete)}
-    target_offset/size must match one of scanned blocks.
+    """Patch arbitrary U-Boot environment variables with recovery for missing terminator.
+    updates: {key: new_value or '' (delete)}
+    Returns (ok, err). Supports two modes:
+      1) Structured block (CRC + key/value + double null)
+      2) Raw small block (<0x600) fallback: in-place value overwrite (no length growth, no CRC recompute)
     """
     import struct, binascii
     try:
-        with open(src_fw,'rb') as f:
-            f.seek(target_offset); block=f.read(target_size)
-        if len(block)!=target_size:
-            log_func('[UBOOT] อ่าน block ไม่ครบ'); return False, 'short read'
-        stored_crc=struct.unpack('<I', block[:4])[0]
-        data=block[4:]
-        end_double=data.find(b'\x00\x00')
-        if end_double==-1:
-            log_func('[UBOOT] ไม่พบ termination (\0\0)'); return False, 'no terminator'
-        env_region=data[:end_double+1]
-        pairs=[]; order=[]
-        for raw in env_region.split(b'\x00'):
-            if not raw: continue
-            if b'=' not in raw: continue
-            k,v=raw.split(b'=',1)
-            try:
-                k=k.decode(); v=v.decode(errors='ignore')
-            except: continue
-            pairs.append((k,v)); order.append(k)
-        # Apply updates
-        new_pairs=[]; updated_keys=set()
-        for k,v in pairs:
-            if k in updates:
-                nv=updates[k]
-                updated_keys.add(k)
-                if nv=='' or nv is None:
-                    # deletion
+        with open(src_fw, 'rb') as f:
+            f.seek(target_offset)
+            block = f.read(target_size)
+        if len(block) != target_size:
+            log_func('[UBOOT] อ่าน block ไม่ครบ')
+            return False, 'short read'
+        treat_raw = target_size < 0x600
+        stored_crc = struct.unpack('<I', block[:4])[0]
+        data = block[4:]
+        end_double = data.find(b'\x00\x00')
+        has_double = end_double != -1
+        structured_ok = has_double and b'=' in data[:end_double]
+        if not structured_ok and treat_raw:
+            raw = bytearray(block)
+            changed = 0
+            for k, new_v in updates.items():
+                if new_v in (None, ''):
+                    continue  # raw mode skip deletions
+                pat = f"{k}=".encode()
+                pos = raw.find(pat)
+                if pos == -1:
                     continue
-                if nv!=v:
-                    new_pairs.append((k,str(nv)))
+                val_start = pos + len(pat)
+                val_end = raw.find(b'\x00', val_start)
+                if val_end == -1:
+                    continue
+                old_val = raw[val_start:val_end]
+                new_val_b = str(new_v).encode()
+                if len(new_val_b) > len(old_val):
+                    log_func(f"[UBOOT] raw skip {k} (ยาวขึ้น {len(old_val)}->{len(new_val_b)})")
+                    continue
+                raw[val_start:val_start+len(new_val_b)] = new_val_b
+                if len(new_val_b) < len(old_val):
+                    raw[val_start+len(new_val_b):val_end] = b'\x00' * (len(old_val)-len(new_val_b))
+                changed += 1
+            if not changed:
+                return False, 'no changes'
+            with open(src_fw, 'rb') as fsrc, open(dst_fw, 'wb') as fdst:
+                shutil.copyfileobj(fsrc, fdst)
+            with open(dst_fw, 'r+b') as f:
+                f.seek(target_offset)
+                f.write(raw)
+            log_func(f"[UBOOT] raw patch @0x{target_offset:X} size=0x{target_size:X} changed={changed}")
+            return True, ''
+        # Structured mode (CRC region)
+        reconstructed = False
+        if not has_double:
+            # Reconstruct by scanning successive key=value strings
+            scan_region = data
+            pairs_raw = []
+            p = 0
+            max_len = min(len(scan_region), target_size-4)
+            while p < max_len:
+                nxt = scan_region.find(b'\x00', p)
+                if nxt == -1:
+                    break
+                seg = scan_region[p:nxt]
+                if seg == b'':
+                    break
+                if b'=' in seg and 1 <= seg.find(b'=') <= 64:
+                    key_part = seg.split(b'=')[0]
+                    if all(32 <= b <= 126 for b in key_part):
+                        pairs_raw.append(seg)
                 else:
-                    new_pairs.append((k,v))
+                    if pairs_raw:
+                        break
+                p = nxt + 1
+                if p < max_len and scan_region[p:p+1] == b'\x00':
+                    break
+            if pairs_raw:
+                env_region = b''.join(s+b'\x00' for s in pairs_raw)
+                reconstructed = True
+                log_func(f"[UBOOT] recovery: สร้าง env_region ใหม่จาก {len(pairs_raw)} pairs (ไม่มี terminator เดิม)")
             else:
-                new_pairs.append((k,v))
-        # Add new keys not present
-        for k,nv in updates.items():
-            if k not in updated_keys and (nv is not None) and nv!='':
-                new_pairs.append((k,str(nv)))
-        kv_bytes=b''.join(f"{k}={v}".encode()+b'\x00' for k,v in new_pairs)
-        new_env_region=kv_bytes+b'\x00'
-        if len(new_env_region)+1 > target_size-4:
-            log_func('[UBOOT] env ใหม่ยาวเกิน block'); return False, 'overflow'
-        new_crc=binascii.crc32(new_env_region)&0xffffffff
-        used=len(new_env_region)+1
-        padding=b'\x00'*((target_size-4)-used)
-        new_block=struct.pack('<I', new_crc)+new_env_region+b'\x00'+padding
-        with open(src_fw,'rb') as fsrc, open(dst_fw,'wb') as fdst: shutil.copyfileobj(fsrc,fdst)
-        with open(dst_fw,'r+b') as f: f.seek(target_offset); f.write(new_block)
-        log_func(f"[UBOOT] Patch vars @0x{target_offset:X} size=0x{target_size:X} crc_old={stored_crc:08x} crc_new={new_crc:08x} updates={len(updates)}")
+                log_func('[UBOOT] ไม่พบ termination (\0\0) และกู้คืนไม่ได้')
+                return False, 'no terminator'
+        else:
+            env_region = data[:end_double+1]
+        # Parse existing pairs
+        pairs = []
+        for raw in env_region.split(b'\x00'):
+            if not raw or b'=' not in raw:
+                continue
+            k, v = raw.split(b'=', 1)
+            try:
+                pairs.append((k.decode(), v.decode(errors='ignore')))
+            except Exception:
+                continue
+        # Apply updates
+        new_pairs = []
+        seen = set()
+        for k, v in pairs:
+            if k in updates:
+                nv = updates[k]
+                seen.add(k)
+                if nv in ('', None):
+                    continue
+                if nv != v:
+                    new_pairs.append((k, str(nv)))
+                else:
+                    new_pairs.append((k, v))
+            else:
+                new_pairs.append((k, v))
+        for k, nv in updates.items():
+            if k not in seen and nv not in ('', None):
+                new_pairs.append((k, str(nv)))
+        kv_bytes = b''.join(f"{k}={v}".encode()+b'\x00' for k, v in new_pairs)
+        new_env_region = kv_bytes + b'\x00'
+        if len(new_env_region) + 1 > target_size - 4:
+            log_func('[UBOOT] env ใหม่ยาวเกิน block')
+            return False, 'overflow'
+        new_crc = binascii.crc32(new_env_region) & 0xffffffff
+        used = len(new_env_region) + 1
+        padding = b'\x00' * ((target_size - 4) - used)
+        new_block = struct.pack('<I', new_crc) + new_env_region + b'\x00' + padding
+        with open(src_fw, 'rb') as fsrc, open(dst_fw, 'wb') as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+        with open(dst_fw, 'r+b') as f:
+            f.seek(target_offset)
+            f.write(new_block)
+        log_func(f"[UBOOT] Patch vars @0x{target_offset:X} size=0x{target_size:X} crc_old={stored_crc:08x} crc_new={new_crc:08x} updates={len(updates)}{' (recovered no-term)' if reconstructed else ''}")
         return True, ''
     except Exception as e:
-        log_func(f"[UBOOT] error: {e}"); return False, str(e)
-
-def patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func, forced_port=None):
-    # เพิ่ม getty สำหรับพอร์ตอนุกรมที่ตรวจพบ (auto-detect)
-    tmpdir = tempfile.mkdtemp(prefix="patch-serial-")
-    log_func(f"[TEMP] serial patch workspace: {tmpdir}")
-    try:
-        # Extract rootfs
-        rootfs_bin = os.path.join(tmpdir, "rootfs.bin")
-        with open(fw_path, "rb") as f:
-            f.seek(rootfs_part['offset'])
-            rootfs = f.read(rootfs_part['size'])
-            with open(rootfs_bin, "wb") as fo:
-                fo.write(rootfs)
-        log_func(f"[INFO] ขนาด rootfs เดิม: {os.path.getsize(rootfs_bin)} bytes")
-        unsquashfs_dir = os.path.join(tmpdir, "unsquashfs")
-        os.makedirs(unsquashfs_dir)
-        ok, err = extract_rootfs(rootfs_part['fs'], rootfs_bin, unsquashfs_dir, log_func)
-        if not ok:
-            log_func(f"❌ แตก rootfs ไม่สำเร็จ: {err}")
-            return False, err
+        log_func(f"[UBOOT] error: {e}")
+        return False, str(e)
         # detect preferred serial port
         if forced_port:
             serial_port = forced_port
@@ -1192,154 +1248,96 @@ def patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func, forced_p
         # Write new firmware
         with open(fw_path, "rb") as f:
             fw_data = bytearray(f.read())
-        with open(new_rootfs_bin, "rb") as f:
-            new_rootfs = f.read()
-        fw_data[rootfs_part['offset']:rootfs_part['offset'] + len(new_rootfs)] = new_rootfs
-        # fill zero if needed
-        if len(new_rootfs) < rootfs_part['size']:
-            fw_data[rootfs_part['offset'] + len(new_rootfs):rootfs_part['offset'] + rootfs_part['size']] = b'\x00' * (rootfs_part['size'] - len(new_rootfs))
-        with open(out_path, "wb") as f:
-            f.write(fw_data)
-        log_func(f"✅ Patch shell serial สำเร็จ: {out_path}")
-        return True, ""
-    finally:
+        import struct, binascii
         try:
-            shutil.rmtree(tmpdir)
-        except Exception:
-            pass
-
-def patch_rootfs_network(fw_path, rootfs_part, out_path, log_func):
-    # ปิด telnet / ftp (ลบหรือคอมเมนต์ใน inetd.conf) ถ้าไม่พบให้ log ไว้
-    tmpdir = tempfile.mkdtemp(prefix="patch-net-")
-    log_func(f"[TEMP] network patch workspace: {tmpdir}")
-    try:
-        rootfs_bin = os.path.join(tmpdir, "rootfs.bin")
-        with open(fw_path, "rb") as f:
-            f.seek(rootfs_part['offset'])
-            rootfs = f.read(rootfs_part['size'])
-            with open(rootfs_bin, "wb") as fo:
-                fo.write(rootfs)
-        unsquashfs_dir = os.path.join(tmpdir, "unsquashfs")
-        os.makedirs(unsquashfs_dir)
-        ok, err = extract_rootfs(rootfs_part['fs'], rootfs_bin, unsquashfs_dir, log_func)
-        if not ok:
-            log_func(f"❌ แตก rootfs ไม่สำเร็จ: {err}")
-            return False, err
-        inetd_path = os.path.join(unsquashfs_dir, "etc", "inetd.conf")
-        if os.path.exists(inetd_path):
-            try:
-                with open(inetd_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    lines = f.readlines()
-                new_lines = []
-                removed = 0
-                for ln in lines:
-                    low = ln.lower()
-                    if ('telnet' in low or 'ftp' in low) and not low.strip().startswith('#'):
-                        new_lines.append('#DISABLED ' + ln)
-                        removed += 1
+            with open(src_fw,'rb') as f:
+                f.seek(target_offset)
+                block=f.read(target_size)
+            if len(block)!=target_size:
+                log_func('[UBOOT] อ่าน block ไม่ครบ')
+                return False, 'short read'
+            stored_crc=struct.unpack('<I', block[:4])[0]
+            data=block[4:]
+            end_double=data.find(b'\x00\x00')
+            reconstructed=False
+            if end_double==-1:
+                # Attempt recovery: parse sequential key=value strings
+                scan_region=data
+                pairs_raw=[]; p=0; max_len=min(len(scan_region), target_size-4)
+                while p < max_len:
+                    nxt=scan_region.find(b'\x00', p)
+                    if nxt==-1:
+                        break
+                    seg=scan_region[p:nxt]
+                    if seg==b'':
+                        break
+                    if b'=' in seg and 1 <= seg.find(b'=') <= 64:
+                        key_part=seg.split(b'=')[0]
+                        if all(32 <= b <= 126 for b in key_part):
+                            pairs_raw.append(seg)
                     else:
-                        new_lines.append(ln)
-                with open(inetd_path, 'w', encoding='utf-8') as f:
-                    f.writelines(new_lines)
-                log_func(f"ปิด telnet/ftp ใน inetd.conf (คอมเมนต์ {removed} บรรทัด)")
-            except Exception as e:
-                log_func(f"แก้ไข inetd.conf ไม่สำเร็จ: {e}")
-        else:
-            log_func("ไม่พบ etc/inetd.conf (อาจไม่มีบริการ telnet/ftp)")
-        # Repack rootfs
-        new_rootfs_bin = os.path.join(tmpdir, "new_rootfs.bin")
-        ok, err = repack_rootfs(rootfs_part['fs'], unsquashfs_dir, new_rootfs_bin, log_func)
-        if not ok:
-            log_func(f"❌ pack rootfs ไม่สำเร็จ: {err}")
-            return False, err
-        # Write new firmware
-        with open(fw_path, "rb") as f:
-            fw_data = bytearray(f.read())
-        with open(new_rootfs_bin, "rb") as f:
-            new_rootfs = f.read()
-        if len(new_rootfs) > rootfs_part['size']:
-            log_func("❌ rootfs ใหม่ใหญ่เกินขอบเขตเดิม ไม่สามารถ patch ได้")
-            return False, "rootfs too large"
-        fw_data[rootfs_part['offset']:rootfs_part['offset'] + len(new_rootfs)] = new_rootfs
-        if len(new_rootfs) < rootfs_part['size']:
-            fw_data[rootfs_part['offset'] + len(new_rootfs):rootfs_part['offset'] + rootfs_part['size']] = b'\x00' * (rootfs_part['size'] - len(new_rootfs))
-        with open(out_path, "wb") as f:
-            f.write(fw_data)
-        log_func(f"✅ Patch shell network สำเร็จ: {out_path}")
-        return True, ""
-    finally:
-        shutil.rmtree(tmpdir)
-
-def patch_root_password(fw_path, rootfs_part, password, out_path, log_func):
-    tmpdir = tempfile.mkdtemp(prefix="patch-rootpw-")
-    log_func(f"[TEMP] root password patch workspace: {tmpdir}")
-    try:
-        rootfs_bin = os.path.join(tmpdir, "rootfs.bin")
-        with open(fw_path, "rb") as f:
-            f.seek(rootfs_part['offset'])
-            rootfs = f.read(rootfs_part['size'])
-            with open(rootfs_bin, "wb") as fo:
-                fo.write(rootfs)
-        unsquashfs_dir = os.path.join(tmpdir, "unsquashfs")
-        os.makedirs(unsquashfs_dir)
-        ok, err = extract_rootfs(rootfs_part['fs'], rootfs_bin, unsquashfs_dir, log_func)
-        if not ok:
-            log_func(f"❌ แตก rootfs ไม่สำเร็จ: {err}")
-            return False, err
-        shadow_path = os.path.join(unsquashfs_dir, "etc", "shadow")
-        if not os.path.exists(shadow_path):
-            log_func("❌ ไม่พบ /etc/shadow ใน rootfs")
-            return False, "shadow missing"
-        # Allow passing a pre-computed hash (starts with $6$) so imported profiles can work without plain password.
-        if password == "":
-            new_hash = "!"  # lock root
-        elif password.startswith("$6$"):
-            new_hash = password  # already hashed (sha512-crypt)
-        else:
-            new_hash = sha512_crypt.hash(password, rounds=5000)
-        with open(shadow_path, "r") as f:
-            lines = f.readlines()
-        new_lines = []
-        found = False
-        for line in lines:
-            if line.startswith("root:"):
-                found = True
-                parts = line.split(":")
-                parts[1] = new_hash
-                new_lines.append(":".join(parts))
-            else:
-                new_lines.append(line)
-        if not found:
-            log_func("❌ ไม่พบ user root ใน /etc/shadow")
-            return False, "root user not found"
-        with open(shadow_path, "w") as f:
-            for l in new_lines:
-                f.write(l if l.endswith("\n") else l + "\n")
-        new_rootfs_bin = os.path.join(tmpdir, "new_rootfs.bin")
-        ok, err = repack_rootfs(rootfs_part['fs'], unsquashfs_dir, new_rootfs_bin, log_func)
-        if not ok:
-            log_func(f"❌ pack rootfs ไม่สำเร็จ: {err}")
-            return False, err
-        with open(fw_path, "rb") as f:
-            fw_data = bytearray(f.read())
-        with open(new_rootfs_bin, "rb") as f:
-            new_rootfs = f.read()
-        if len(new_rootfs) > rootfs_part['size']:
-            log_func("❌ rootfs ใหม่ใหญ่เกินขอบเขตเดิม ไม่สามารถ patch ได้")
-            return False, "rootfs too large"
-        fw_data[rootfs_part['offset']:rootfs_part['offset'] + len(new_rootfs)] = new_rootfs
-        if len(new_rootfs) < rootfs_part['size']:
-            fw_data[rootfs_part['offset'] + len(new_rootfs):rootfs_part['offset'] + rootfs_part['size']] = b'\x00' * (rootfs_part['size'] - len(new_rootfs))
-        with open(out_path, "wb") as f:
-            f.write(fw_data)
-        log_func(f"✅ Patch root password สำเร็จ: {out_path}")
-        return True, ""
-    finally:
-        shutil.rmtree(tmpdir)
+                        if pairs_raw:
+                            break
+                    p = nxt + 1
+                    if p < max_len and scan_region[p:p+1]==b'\x00':
+                        break
+                if pairs_raw:
+                    env_region=b''.join(s+b'\x00' for s in pairs_raw)
+                    end_double=len(env_region)-1
+                    reconstructed=True
+                    log_func(f"[UBOOT] recovery: สร้าง env_region ใหม่จาก {len(pairs_raw)} pairs (ไม่มี terminator เดิม)")
+                else:
+                    log_func('[UBOOT] ไม่พบ termination (\0\0) และกู้คืนไม่ได้')
+                    return False, 'no terminator'
+            if not reconstructed:
+                env_region=data[:end_double+1]
+            pairs=[]; order=[]
+            for raw in env_region.split(b'\x00'):
+                if not raw or b'=' not in raw:
+                    continue
+                k,v=raw.split(b'=',1)
+                try:
+                    k=k.decode(); v=v.decode(errors='ignore')
+                except Exception:
+                    continue
+                pairs.append((k,v)); order.append(k)
+            new_pairs=[]; updated_keys=set()
+            for k,v in pairs:
+                if k in updates:
+                    nv=updates[k]
+                    updated_keys.add(k)
+                    if nv=='' or nv is None:
+                        continue
+                    if nv!=v:
+                        new_pairs.append((k,str(nv)))
+                    else:
+                        new_pairs.append((k,v))
+                else:
+                    new_pairs.append((k,v))
+            for k,nv in updates.items():
+                if k not in updated_keys and (nv is not None) and nv!='':
+                    new_pairs.append((k,str(nv)))
+            kv_bytes=b''.join(f"{k}={v}".encode()+b'\x00' for k,v in new_pairs)
+            new_env_region=kv_bytes+b'\x00'
+            if len(new_env_region)+1 > target_size-4:
+                log_func('[UBOOT] env ใหม่ยาวเกิน block')
+                return False, 'overflow'
+            new_crc=binascii.crc32(new_env_region)&0xffffffff
+            used=len(new_env_region)+1
+            padding=b'\x00'*((target_size-4)-used)
+            new_block=struct.pack('<I', new_crc)+new_env_region+b'\x00'+padding
+            with open(src_fw,'rb') as fsrc, open(dst_fw,'wb') as fdst:
+                shutil.copyfileobj(fsrc,fdst)
+            with open(dst_fw,'r+b') as f:
+                f.seek(target_offset)
+                f.write(new_block)
+            log_func(f"[UBOOT] Patch vars @0x{target_offset:X} size=0x{target_size:X} crc_old={stored_crc:08x} crc_new={new_crc:08x} updates={len(updates)}{' (recovered no-term)' if reconstructed else ''}")
+            return True, ''
+        except Exception as e:
+            log_func(f"[UBOOT] error: {e}")
+            return False, str(e)
 
 # ---- Wrapper names expected by GUI (map to the above helpers) ----
-def core_patch_boot_delay(fw_path, rootfs_part, new_delay, out_path, log_func):
-    return patch_boot_delay(fw_path, rootfs_part, new_delay, out_path, log_func)
 
 def core_patch_rootfs_shell_serial(fw_path, rootfs_part, out_path, log_func, forced_port=None):
     if rootfs_part is None:
@@ -1570,7 +1568,7 @@ class MainWindow(QMainWindow):
             val, ok = QInputDialog.getInt(self,'Boot Delay','New boot delay (seconds):',3,0,600,1)
             if not ok: return
             outp = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','')+f'_bootdelay{val}.bin')
-            okc, msg = core_patch_boot_delay(self.fw_path, None, val, outp, lambda m: self.thread_log.emit(m))
+            okc, msg = core_patch_boot_delay_impl(self.fw_path, None, val, outp, lambda m: self.thread_log.emit(m))
             if okc:
                 self.log(f'[BOOT] Patched bootdelay={val} -> {outp}')
                 QMessageBox.information(self,'Boot Delay',f'Success -> {outp}')
@@ -2585,7 +2583,7 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self.log(f'[UBOOT] env patch exception: {e}; falling back')
             # Fallback: generic core patch (may patch raw byte or best env automatically)
-            okc, msg = core_patch_boot_delay(fw, None, val, outp, lambda m: self.thread_log.emit(m))
+            okc, msg = core_patch_boot_delay_impl(fw, None, val, outp, lambda m: self.thread_log.emit(m))
             if okc:
                 self.log(f'Boot delay patched -> {outp}')
             else:
@@ -2975,12 +2973,14 @@ class MainWindow(QMainWindow):
     # Patch action wrappers expected by auto-run
     def do_patch_boot_delay(self):
         out = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','') + '_patched_auto_boot.bin')
-        ok, msg = core_patch_boot_delay(self.fw_path, None, 0, out, lambda m: self.thread_log.emit(m))
+        ok, msg = core_patch_boot_delay_impl(self.fw_path, None, 0, out, lambda m: self.thread_log.emit(m))
         try:
             self.thread_log.emit(f'[PATCH_BOOT] result: {ok} {msg}')
         except Exception:
-            try: self.log(f'[PATCH_BOOT] result: {ok} {msg}')
-            except Exception: pass
+            try:
+                self.log(f'[PATCH_BOOT] result: {ok} {msg}')
+            except Exception:
+                pass
 
     def do_patch_serial(self):
         out = os.path.join(self.output_dir, os.path.basename(self.fw_path).replace('.bin','') + '_patched_auto_serial.bin')
@@ -3440,7 +3440,7 @@ class MainWindow(QMainWindow):
         # Boot delay
         if actions.get('boot_delay'):
             out = os.path.join(self.output_dir, base + '_sel_boot.bin')
-            ok, msg = core_patch_boot_delay(cur, None, actions.get('boot_delay_value',1), out, lambda m: self.thread_log.emit(m))
+            ok, msg = core_patch_boot_delay_impl(cur, None, actions.get('boot_delay_value',1), out, lambda m: self.thread_log.emit(m))
             if ok: cur = out; self.thread_log.emit('[SELECTIVE] boot_delay applied');
             else: self.thread_log.emit(f'[SELECTIVE] boot_delay failed: {msg}')
         if actions.get('serial_shell'):
