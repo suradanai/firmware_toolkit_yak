@@ -3294,23 +3294,40 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, 'Detect', 'Select firmware first')
             return
         try:
-            parts = multisquash.detect_squashfs(self.fw_path)
-            self.detected_parts = parts
-            if parts:
+            raw_parts = multisquash.detect_squashfs(self.fw_path)
+            meta_parts = []
+            with open(self.fw_path,'rb') as f:
+                for i,p in enumerate(raw_parts):
+                    try:
+                        f.seek(p.offset); head = f.read(512)
+                    except Exception:
+                        head = b''
+                    fs_guess = 'auto'
+                    if head.startswith(b'hsqs') or head.startswith(b'sqsh'):
+                        fs_guess = 'squashfs'
+                    elif head[:4] in (b'\x45\x3d\xcd\x28', b'\x28\xcd\x3d\x45'):
+                        fs_guess = 'cramfs'
+                    elif head[:2] == b'\x85\x19':
+                        fs_guess = 'jffs2'
+                    elif b'yaffs' in head.lower():
+                        fs_guess = 'yaffs2'
+                    meta_parts.append({'offset': p.offset, 'size': p.size, 'fs_guess': fs_guess, 'desc': getattr(p,'desc','')})
+                    self.log(f"[PART] #{i+1} off={hex(p.offset)} size={p.size} guess={fs_guess}")
+            self.detected_parts = meta_parts
+            if meta_parts:
                 self.rootfs_part_spin.setEnabled(True)
-                self.rootfs_part_spin.setMaximum(len(parts))
-                self.parts_info_label.setText(f'Detected {len(parts)} parts')
+                self.rootfs_part_spin.setMaximum(len(meta_parts))
+                guesses = ', '.join(sorted({m['fs_guess'] for m in meta_parts}))
+                self.parts_info_label.setText(f'Detected {len(meta_parts)} parts (fs: {guesses})')
             else:
                 self.rootfs_part_spin.setEnabled(False)
                 self.parts_info_label.setText('No parts detected')
-            for i,p in enumerate(parts):
-                self.log(f'[PART] #{i+1} off={hex(p.offset)} size={p.size}')
         except Exception as e:
             self.log(f'[PART] detect error: {e}')
             QMessageBox.warning(self, 'Detect', f'Error: {e}')
 
     def _selected_part(self):
-        parts = getattr(self, 'detected_parts', [])
+        parts = getattr(self, 'detected_parts', [])  # list of dicts now
         if not parts:
             QMessageBox.information(self, 'RootFS', 'ยังไม่มี parts (กด Detect Parts ก่อน)')
             return None
@@ -3319,8 +3336,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, 'RootFS', 'index ผิดพลาด')
             return None
         p = parts[idx]
-        # convert to dict format expected by patch helpers
-        return {'offset': p.offset, 'size': p.size, 'fs': 'squashfs', 'desc': p.desc}
+        # Already dict with fs_guess
+        return {'offset': p['offset'], 'size': p['size'], 'fs': p.get('fs_guess','auto'), 'desc': p.get('desc','')}
 
     def edit_rootfs_file(self):
         if not getattr(self, 'fw_path', None):
@@ -3339,7 +3356,12 @@ class MainWindow(QMainWindow):
                     f.seek(part['offset']); blob = f.read(part['size'])
                 with open(rootfs_bin,'wb') as f: f.write(blob)
                 extract_dir = os.path.join(tmp,'extract'); os.makedirs(extract_dir, exist_ok=True)
-                ok, err = extract_rootfs(part['fs'], rootfs_bin, extract_dir, self.log)
+                fs_type = part['fs'] or 'auto'
+                self.log(f"[ROOTFS-EDITOR] part_index={self.rootfs_part_spin.value()} fs_guess={fs_type} offset={hex(part['offset'])} size={part['size']}")
+                ok, err = extract_rootfs(fs_type, rootfs_bin, extract_dir, self.log)
+                if not ok and fs_type != 'auto':
+                    self.log(f"[ROOTFS-EDITOR] retry auto after {fs_type} fail: {err}")
+                    ok, err = extract_rootfs('auto', rootfs_bin, extract_dir, self.log)
                 if not ok:
                     QMessageBox.critical(self,'RootFS', f'Extract failed: {err}'); return
                 self.edit_cache_dir = extract_dir
